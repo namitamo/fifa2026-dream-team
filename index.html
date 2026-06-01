@@ -179,6 +179,35 @@
     .sched-stage-label{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 6px;padding-left:2px}
     .no-match-day{background:white;border-radius:10px;padding:18px;text-align:center;color:var(--muted);font-size:13px;margin-bottom:10px;box-shadow:0 1px 4px rgba(0,0,0,.07)}
     .sched-stage-section{margin-bottom:6px}
+    /* IDENTITY MODAL */
+    .id-overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:600;display:flex;align-items:center;justify-content:center;padding:16px}
+    .id-modal{background:white;border-radius:20px;width:100%;max-width:380px;padding:28px 24px;box-shadow:0 24px 64px rgba(0,0,0,.5);text-align:center}
+    .id-modal h2{font-size:22px;font-weight:900;color:var(--navy);margin-bottom:6px}
+    .id-modal p{font-size:13px;color:var(--muted);margin-bottom:22px;line-height:1.5}
+    .id-btns{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+    .id-btn{padding:16px 10px;border:2.5px solid var(--border);border-radius:14px;background:white;cursor:pointer;font-size:15px;font-weight:900;transition:all .2s;color:white}
+    .id-btn:hover{transform:translateY(-2px);box-shadow:0 6px 16px rgba(0,0,0,.2)}
+    .id-watch{padding:9px;border:1px solid var(--border);border-radius:10px;background:white;cursor:pointer;font-size:12px;font-weight:700;color:var(--muted);width:100%}
+    .id-watch:hover{background:#f8fafc}
+    /* TURN BANNERS */
+    .your-turn-banner{background:linear-gradient(135deg,#15803d,#16a34a);color:white;border-radius:12px;padding:14px 18px;margin-bottom:12px;display:flex;align-items:center;gap:10px;font-weight:800;font-size:15px}
+    .your-turn-banner .pulse-ring{width:12px;height:12px;border-radius:50%;background:#4ade80;animation:pulse 1.2s infinite}
+    .wait-banner{background:#f1f5f9;border:2px dashed #cbd5e0;border-radius:12px;padding:14px 18px;margin-bottom:12px;text-align:center;color:var(--muted);font-size:13px;font-weight:600}
+    /* DRAW ORDER CARD */
+    .draw-card{background:linear-gradient(135deg,#0a1628,#0f2c5e);border-radius:14px;padding:18px;margin-bottom:14px;color:white}
+    .draw-card h3{font-size:14px;font-weight:800;margin-bottom:4px;letter-spacing:.2px}
+    .draw-card p{font-size:11px;color:#94a3b8;margin-bottom:14px}
+    .draw-order-row{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:14px}
+    .draw-pill{padding:6px 14px;border-radius:20px;font-size:13px;font-weight:900;color:white;display:flex;align-items:center;gap:5px}
+    .draw-pill .pos{font-size:10px;opacity:.7}
+    .btn-draw{padding:9px 20px;border:none;border-radius:8px;background:#f59e0b;color:#1a202c;font-size:13px;font-weight:900;cursor:pointer;transition:all .15s}
+    .btn-draw:hover{background:#d97706;transform:translateY(-1px)}
+    .btn-draw:disabled{opacity:.5;cursor:not-allowed;transform:none}
+    /* MY CHIP */
+    .my-chip{font-size:11px;background:rgba(255,255,255,.15);padding:3px 10px;border-radius:10px;cursor:pointer;font-weight:700;border:none;color:white}
+    .my-chip:hover{background:rgba(255,255,255,.25)}
+    /* LOCKED GRID */
+    .grid-locked{pointer-events:none;opacity:.35;user-select:none}
   </style>
 </head>
 <body>
@@ -192,6 +221,7 @@
       <span id="sync-dot" style="width:7px;height:7px;border-radius:50%;background:#94a3b8;display:inline-block"></span>
       <span id="sync-text" style="font-size:11px;color:#94a3b8">Connecting…</span>
     </span>
+    <button class="my-chip" id="my-chip" onclick="showIdentityModal()" title="Change player identity">👤 Who are you?</button>
   </div>
 </header>
 
@@ -360,6 +390,17 @@
   </div>
 </div>
 
+<!-- IDENTITY MODAL -->
+<div class="id-overlay" id="id-overlay">
+  <div class="id-modal">
+    <div style="font-size:32px;margin-bottom:8px">⚽</div>
+    <h2>Who are you?</h2>
+    <p>Pick your name so the draft knows whose turn it is.<br>This is saved on your device.</p>
+    <div class="id-btns" id="id-btns"></div>
+    <button class="id-watch" onclick="setIdentity(null)">👀 Just watching</button>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <!-- Firebase compat SDKs -->
@@ -445,11 +486,12 @@ function loadState() {
     if(s) return JSON.parse(s);
   } catch(e) {}
   return {
-    picks:     {Namimoto:[],Adbrahm:[],Abu:[],Zdawg:[]},
-    pickIdx:   0,
-    matches:   {}, // teamName -> {results:[], stage:'Group', cost:0}
-    changes:   {Namimoto:0, Adbrahm:0, Abu:0, Zdawg:0},
-    changeLog: {Namimoto:[], Adbrahm:[], Abu:[], Zdawg:[]}
+    picks:       {Namimoto:[],Adbrahm:[],Abu:[],Zdawg:[]},
+    pickIdx:     0,
+    matches:     {},
+    changes:     {Namimoto:0, Adbrahm:0, Abu:0, Zdawg:0},
+    changeLog:   {Namimoto:[], Adbrahm:[], Abu:[], Zdawg:[]},
+    playerOrder: ['Namimoto','Adbrahm','Abu','Zdawg']
   };
 }
 function save() {
@@ -460,17 +502,30 @@ function save() {
 }
 
 let S = loadState();
-// Migrate old saves that don't have the changes fields
-if(!S.changes)   S.changes   = {Namimoto:0,Adbrahm:0,Abu:0,Zdawg:0};
-if(!S.changeLog) S.changeLog = {Namimoto:[],Adbrahm:[],Abu:[],Zdawg:[]};
-PLAYERS.forEach(p=>{ if(!S.changes[p]) S.changes[p]=0; if(!S.changeLog[p]) S.changeLog[p]=[]; });
+// Migrate old saves
+if(!S.changes)     S.changes     = {Namimoto:0,Adbrahm:0,Abu:0,Zdawg:0};
+if(!S.changeLog)   S.changeLog   = {Namimoto:[],Adbrahm:[],Abu:[],Zdawg:[]};
+if(!S.playerOrder) S.playerOrder = ['Namimoto','Adbrahm','Abu','Zdawg'];
+PLAYERS.forEach(p=>{
+  if(!S.changes[p])   S.changes[p]=0;
+  if(!S.changeLog[p]) S.changeLog[p]=[];
+  if(!S.picks[p])     S.picks[p]=[];   // Firebase drops empty arrays — ensure arrays exist
+});
+
+// Identity — stored locally per device, never synced to Firebase
+let myPlayer = localStorage.getItem('fifa2026_me') || null;
+
 let gFilter = 'ALL';
 let chart = null;
 
 // ============================================================
 // HELPERS
 // ============================================================
-const curPlayer  = () => S.pickIdx >= DRAFT_ORDER.length ? null : PLAYERS[DRAFT_ORDER[S.pickIdx]];
+const curPlayer = () => {
+  if(S.pickIdx >= DRAFT_ORDER.length) return null;
+  const order = S.playerOrder || PLAYERS;
+  return order[DRAFT_ORDER[S.pickIdx]];
+};
 const isDone     = () => S.pickIdx >= DRAFT_ORDER.length;
 const allPicked  = () => Object.values(S.picks).flat().map(t=>t.name);
 const getPicks   = (p) => S.picks[p] || [];
@@ -537,11 +592,40 @@ function renderTurnCard() {
     return;
   }
   banner.style.display='none';
+
+  const po = S.playerOrder || PLAYERS;
+  const isDrawn = JSON.stringify(po) !== JSON.stringify(['Namimoto','Adbrahm','Abu','Zdawg']) || S.pickIdx > 0;
+
+  // ── Draw order card (shown until first pick is made) ──
+  const drawSection = S.pickIdx === 0 ? `
+    <div class="draw-card">
+      <h3>🎲 Draft Order</h3>
+      <p>Randomise before anyone picks — order locks once drafting starts</p>
+      <div class="draw-order-row">
+        ${po.map((name,i)=>`
+          <div class="draw-pill" style="background:${P_COLORS[name]}">
+            <span class="pos">${i+1}.</span> ${name}
+          </div>`).join('')}
+      </div>
+      <button class="btn-draw" onclick="drawDraftOrder()">🎲 Randomise Order</button>
+    </div>` : '';
+
   const p = curPlayer();
   const color = P_COLORS[p];
   const round = Math.floor(S.pickIdx/4)+1;
   const left = DRAFT_ORDER.length - S.pickIdx;
+  const isMyTurn = myPlayer && myPlayer === p;
+  const isWatching = !myPlayer;
+
+  const turnBanner = isMyTurn
+    ? `<div class="your-turn-banner"><div class="pulse-ring"></div>🎯 It's YOUR turn to pick, ${p}!</div>`
+    : myPlayer
+      ? `<div class="wait-banner">⏳ Waiting for <strong style="color:${color}">${p}</strong> to pick…</div>`
+      : '';
+
   wrap.innerHTML = `
+    ${drawSection}
+    ${turnBanner}
     <div class="turn-card" style="border-left-color:${color}">
       <div>
         <div class="turn-label">Now Picking</div>
@@ -593,6 +677,10 @@ function setFilter(g, btn) {
 
 function renderTeams() {
   const grid = document.getElementById('teams-grid');
+  // Lock grid when it's someone else's turn (and player has identified themselves)
+  const p = curPlayer();
+  const locked = !isDone() && myPlayer && myPlayer !== p;
+  grid.className = 'teams-grid' + (locked ? ' grid-locked' : '');
   const search = document.getElementById('team-search').value.toLowerCase();
   const picked = allPicked();
   let teams = TEAMS;
@@ -650,6 +738,12 @@ function pickTeam(teamName) {
   const team = TEAMS.find(t=>t.name===teamName);
   if(!team) return;
 
+  // Identity enforcement — only block if they've identified themselves as a different player
+  if(myPlayer && myPlayer !== p){
+    toast(`⏳ It's ${p}'s turn — wait for them to pick!`,'err');
+    return;
+  }
+
   if(!canAffordPick(p, team)){
     const picks = getPicks(p);
     if(picks.length===MAX_PICKS-1){
@@ -660,6 +754,7 @@ function pickTeam(teamName) {
     return;
   }
 
+  if(!S.picks[p]) S.picks[p] = [];   // guard: Firebase nulls empty arrays
   S.picks[p].push(team);
   S.pickIdx++;
   if(!S.matches[team.name]) S.matches[team.name]={results:[],stage:'Group',cost:0};
@@ -675,7 +770,14 @@ function pickTeam(teamName) {
 
 function resetDraft(){
   if(!confirm('Reset the entire draft? All picks and match data will be lost.')) return;
-  S = {picks:{Namimoto:[],Adbrahm:[],Abu:[],Zdawg:[]}, pickIdx:0, matches:{}};
+  const order = S.playerOrder || ['Namimoto','Adbrahm','Abu','Zdawg'];
+  S = {
+    picks:{Namimoto:[],Adbrahm:[],Abu:[],Zdawg:[]},
+    pickIdx:0, matches:{},
+    changes:{Namimoto:0,Adbrahm:0,Abu:0,Zdawg:0},
+    changeLog:{Namimoto:[],Adbrahm:[],Abu:[],Zdawg:[]},
+    playerOrder: order
+  };
   save();
   renderAll();
   toast('Draft reset.','');
@@ -937,6 +1039,52 @@ function confirmSwap(newTeamName){
   renderMatches();
   if(document.getElementById('tab-scoreboard').classList.contains('active')) renderScoreboard();
   toast(`${player}: ${oldTeam.flag} ${oldTeamName} → ${newTeam.flag} ${newTeamName} (Cost: ${cost||'Free'})`, 'ok');
+}
+
+// ============================================================
+// DRAFT ORDER DRAW
+// ============================================================
+function drawDraftOrder() {
+  if(S.pickIdx > 0){
+    toast('Draft already started — cannot change order now.','err');
+    return;
+  }
+  // Fisher-Yates shuffle
+  const arr = [...PLAYERS];
+  for(let i=arr.length-1;i>0;i--){
+    const j=Math.floor(Math.random()*(i+1));
+    [arr[i],arr[j]]=[arr[j],arr[i]];
+  }
+  S.playerOrder = arr;
+  save();
+  renderAll();
+  toast(`🎲 Order drawn: ${arr.map((n,i)=>`${i+1}. ${n}`).join(' · ')}`,'ok');
+}
+
+// ============================================================
+// PLAYER IDENTITY
+// ============================================================
+function showIdentityModal() {
+  const btns = document.getElementById('id-btns');
+  btns.innerHTML = PLAYERS.map(name => {
+    const color = P_COLORS[name];
+    const active = myPlayer===name ? '2px solid white;box-shadow:0 0 0 3px '+color : 'none';
+    return `<button class="id-btn" style="background:${color};border-color:${color}"
+      onclick="setIdentity('${name}')">${name}</button>`;
+  }).join('');
+  document.getElementById('id-overlay').style.display='flex';
+}
+
+function setIdentity(name) {
+  myPlayer = name;
+  if(name) localStorage.setItem('fifa2026_me', name);
+  else     localStorage.removeItem('fifa2026_me');
+  document.getElementById('id-overlay').style.display='none';
+  const chip = document.getElementById('my-chip');
+  chip.textContent = name ? `👤 ${name}` : '👤 Who are you?';
+  if(name) chip.style.background = P_COLORS[name]+'55';
+  else     chip.style.background = 'rgba(255,255,255,.15)';
+  renderAll();
 }
 
 // ============================================================
@@ -1302,6 +1450,7 @@ function updateCountdown(){
 
     // ── Real-time listener: fires on load + every remote change ──
     let _firstLoad = true;
+    let _prevPickIdx = S.pickIdx;
     window._fbRef.on('value', snap => {
       const data = snap.val();
 
@@ -1315,13 +1464,17 @@ function updateCountdown(){
         return;
       }
 
+      const prevIdx = S.pickIdx;
+
       // Merge remote state
       S = data;
-      if (!S.changes)   S.changes   = {Namimoto:0,Adbrahm:0,Abu:0,Zdawg:0};
-      if (!S.changeLog) S.changeLog = {Namimoto:[],Adbrahm:[],Abu:[],Zdawg:[]};
+      if (!S.changes)     S.changes     = {Namimoto:0,Adbrahm:0,Abu:0,Zdawg:0};
+      if (!S.changeLog)   S.changeLog   = {Namimoto:[],Adbrahm:[],Abu:[],Zdawg:[]};
+      if (!S.playerOrder) S.playerOrder = ['Namimoto','Adbrahm','Abu','Zdawg'];
       PLAYERS.forEach(p => {
         if (!S.changes[p])   S.changes[p]   = 0;
         if (!S.changeLog[p]) S.changeLog[p] = [];
+        if (!S.picks[p])     S.picks[p]     = [];  // Firebase drops empty arrays
       });
       localStorage.setItem('fifa2026v2', JSON.stringify(S));
 
@@ -1333,6 +1486,11 @@ function updateCountdown(){
         if (id === 'scoreboard') renderScoreboard();
         if (id === 'matches')    renderMatches();
         if (id === 'schedule')   renderSchedule();
+      }
+
+      // Notify player when it becomes their turn (from a remote pick)
+      if (!_firstLoad && S.pickIdx !== prevIdx && myPlayer && curPlayer() === myPlayer && !isDone()) {
+        toast(`🎯 It's YOUR turn to pick, ${myPlayer}!`, 'ok');
       }
 
       if (_firstLoad) {
@@ -1369,6 +1527,20 @@ updateCountdown();
 setInterval(updateCountdown, 30000);
 renderAll();
 renderSchedule();
+
+// Restore identity chip state
+(function initIdentity(){
+  const chip = document.getElementById('my-chip');
+  if(myPlayer){
+    chip.textContent = `👤 ${myPlayer}`;
+    chip.style.background = P_COLORS[myPlayer]+'55';
+  }
+  // Show identity modal on first ever visit
+  if(!myPlayer && !localStorage.getItem('fifa2026_seen')){
+    localStorage.setItem('fifa2026_seen','1');
+    showIdentityModal();
+  }
+})();
 </script>
 </body>
 </html>
