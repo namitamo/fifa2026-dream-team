@@ -594,20 +594,18 @@ function renderTurnCard() {
   banner.style.display='none';
 
   const po = S.playerOrder || PLAYERS;
-  const isDrawn = JSON.stringify(po) !== JSON.stringify(['Namimoto','Adbrahm','Abu','Zdawg']) || S.pickIdx > 0;
 
-  // ── Draw order card (shown until first pick is made) ──
+  // ── Draft order card (always visible before picks start) ──
   const drawSection = S.pickIdx === 0 ? `
     <div class="draw-card">
       <h3>🎲 Draft Order</h3>
-      <p>Randomise before anyone picks — order locks once drafting starts</p>
+      <p>Order was randomised when the draft was reset — reset again to re-draw</p>
       <div class="draw-order-row">
         ${po.map((name,i)=>`
           <div class="draw-pill" style="background:${P_COLORS[name]}">
             <span class="pos">${i+1}.</span> ${name}
           </div>`).join('')}
       </div>
-      <button class="btn-draw" onclick="drawDraftOrder()">🎲 Randomise Order</button>
     </div>` : '';
 
   const p = curPlayer();
@@ -770,17 +768,22 @@ function pickTeam(teamName) {
 
 function resetDraft(){
   if(!confirm('Reset the entire draft? All picks and match data will be lost.')) return;
-  const order = S.playerOrder || ['Namimoto','Adbrahm','Abu','Zdawg'];
+  // Auto-shuffle on every reset
+  const arr = [...PLAYERS];
+  for(let i=arr.length-1;i>0;i--){
+    const j=Math.floor(Math.random()*(i+1));
+    [arr[i],arr[j]]=[arr[j],arr[i]];
+  }
   S = {
     picks:{Namimoto:[],Adbrahm:[],Abu:[],Zdawg:[]},
     pickIdx:0, matches:{},
     changes:{Namimoto:0,Adbrahm:0,Abu:0,Zdawg:0},
     changeLog:{Namimoto:[],Adbrahm:[],Abu:[],Zdawg:[]},
-    playerOrder: order
+    playerOrder: arr
   };
   save();
   renderAll();
-  toast('Draft reset.','');
+  toast(`🎲 Draft reset · Order: ${arr.map((n,i)=>`${i+1}.${n}`).join(' ')}`, 'ok');
 }
 
 // ============================================================
