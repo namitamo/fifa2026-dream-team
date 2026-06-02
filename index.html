@@ -497,7 +497,11 @@ function loadState() {
 function save() {
   localStorage.setItem('fifa2026v2', JSON.stringify(S));
   if (window._fbRef) {
-    window._fbRef.set(S).catch(e => console.warn('Firebase write failed:', e));
+    window._fbRef.set(S)
+      .then(() => toast('✅ Saved to Firebase','ok'))
+      .catch(e => toast(`⚠️ Firebase FAILED: ${e.message}`,'err'));
+  } else {
+    toast('⚠️ Firebase not connected!','err');
   }
 }
 
