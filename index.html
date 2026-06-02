@@ -35,7 +35,7 @@
     /* PLAYERS GRID */
     .players-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:14px}
     .player-card{background:white;border-radius:10px;padding:12px;border:2px solid var(--border);transition:border-color .2s,box-shadow .2s}
-    .player-card.active-turn{box-shadow:0 0 0 3px rgba(0,0,0,0.1)}
+    .player-card.active-turn{border-width:2px !important}
     .p-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:9px}
     .p-name{font-weight:800;font-size:14px}
     .rank-badge{font-size:11px;padding:2px 8px;border-radius:12px;font-weight:700}
@@ -640,25 +640,29 @@ function renderTurnCard() {
 function renderPlayersGrid() {
   const grid = document.getElementById('players-grid');
   const cp = curPlayer();
-  grid.innerHTML = PLAYERS.map(p => {
+  // Always render in current draft order so card #1 = first drafter
+  const displayOrder = S.playerOrder && S.playerOrder.length === 4 ? S.playerOrder : PLAYERS;
+  grid.innerHTML = displayOrder.map((p, draftPos) => {
     const picks = getPicks(p);
     const rs = rankSum(p);
     const color = P_COLORS[p];
-    const isActive = p===cp && !isDone();
-    let badgeClass='rank-neutral', budgetLabel=`Budget: ${rs}/80`;
-    if(picks.length===MAX_PICKS){ budgeClass=rs>=MIN_BUDGET?'rank-ok':'rank-bad'; budgetLabel=`${rs}/80 ${rs>=MIN_BUDGET?'✓':'✗'}`; }
-    else if(picks.length>0){ badgeClass='rank-warn'; }
-    // fix typo
-    if(picks.length===MAX_PICKS){ badgeClass=rs>=MIN_BUDGET?'rank-ok':'rank-bad'; }
+    const isActive = p === cp && !isDone();
+    let badgeClass = 'rank-neutral', budgetLabel = `Budget: ${rs}/80`;
+    if(picks.length === MAX_PICKS){ badgeClass = rs>=MIN_BUDGET?'rank-ok':'rank-bad'; budgetLabel=`${rs}/80 ${rs>=MIN_BUDGET?'✓':'✗'}`; }
+    else if(picks.length > 0){ badgeClass = 'rank-warn'; }
 
     const slots = Array.from({length:5},(_,i)=>{
       if(picks[i]) return `<div class="pick-slot"><span class="pick-flag">${picks[i].flag}</span><span class="pick-team">${picks[i].name}</span><span class="pick-rank-num">#${picks[i].rank}</span></div>`;
       return `<div class="pick-slot empty">Pick ${i+1}</div>`;
     }).join('');
 
-    return `<div class="player-card ${isActive?'active-turn':''}" style="${isActive?`border-color:${color};`:''}">
+    const draftBadge = !isDone()
+      ? `<span style="font-size:10px;background:${color}22;color:${color};padding:1px 6px;border-radius:8px;font-weight:700">Draft ${draftPos+1}</span>`
+      : '';
+
+    return `<div class="player-card ${isActive?'active-turn':''}" style="${isActive?`border-color:${color};box-shadow:0 0 0 3px ${color}33;`:''}">
       <div class="p-header">
-        <span class="p-name" style="color:${color}">${p}</span>
+        <span class="p-name" style="color:${color}">${p} ${draftBadge}</span>
         <span class="rank-badge ${badgeClass}">${budgetLabel}</span>
       </div>
       ${slots}
