@@ -753,12 +753,6 @@ function pickTeam(teamName) {
   const team = TEAMS.find(t=>t.name===teamName);
   if(!team) return;
 
-  // Identity enforcement — only block if they've identified themselves as a different player
-  if(myPlayer && myPlayer !== p){
-    toast(`⏳ It's ${p}'s turn — wait for them to pick!`,'err');
-    return;
-  }
-
   if(!canAffordPick(p, team)){
     const picks = getPicks(p);
     if(picks.length===MAX_PICKS-1){
