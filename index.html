@@ -498,10 +498,8 @@ function save() {
   localStorage.setItem('fifa2026v2', JSON.stringify(S));
   if (window._fbRef) {
     window._fbRef.set(S)
-      .then(() => toast('✅ Saved to Firebase','ok'))
-      .catch(e => toast(`⚠️ Firebase FAILED: ${e.message}`,'err'));
-  } else {
-    toast('⚠️ Firebase not connected!','err');
+      .then(() => toast('✅ FB saved','ok'))
+      .catch(e => toast(`⚠️ FB FAILED: ${e.message}`,'err'));
   }
 }
 
@@ -753,19 +751,13 @@ function renderConstraint() {
 // PICK A TEAM
 // ============================================================
 function pickTeam(teamName) {
-  const done = isDone();
+  if(isDone()) return;
   const p = curPlayer();
   const picks = getPicks(p);
   const team = TEAMS.find(t=>t.name===teamName);
-  const afford = team ? canAffordPick(p, team) : false;
-  const newSum = team ? [...picks, team].reduce((s,t)=>s+liveRank(t),0) : 0;
-  console.log(`[pickTeam] team=${teamName} player=${p} pickIdx=${S.pickIdx} done=${done} picks=${picks.length} afford=${afford} newSum=${newSum}`);
-  toast(`DBG: player=${p} idx=${S.pickIdx} done=${done} picks=${picks.length} afford=${afford} sum=${newSum}`,'ok');
-
-  if(done) return;
   if(!team) return;
 
-  if(!afford){
+  if(!canAffordPick(p, team)){
     if(picks.length===MAX_PICKS-1){
       toast(`❌ ${team.name} won't meet the 80-pt budget. Pick a lower-ranked team!`,'err');
     } else {
@@ -774,19 +766,13 @@ function pickTeam(teamName) {
     return;
   }
 
-  try {
-    S.picks[p] = getPicks(p);
-    toast(`DBG2: picks before push=${S.picks[p].length} isArray=${Array.isArray(S.picks[p])}`,'ok');
-    S.picks[p].push(team);
-    S.pickIdx++;
-    if(!S.matches) S.matches = {};
-    if(!S.matches[team.name]) S.matches[team.name]={results:[],stage:'Group',cost:0};
-    save();
-    renderAll();
-  } catch(e) {
-    toast(`❌ JS Error: ${e.message}`,'err');
-    console.error('[pickTeam]', e);
-  }
+  S.picks[p] = getPicks(p);
+  S.picks[p].push(team);
+  S.pickIdx++;
+  if(!S.matches) S.matches = {};
+  if(!S.matches[team.name]) S.matches[team.name]={results:[],stage:'Group',cost:0};
+  save();
+  renderAll();
 
   if(isDone()){
     toast('🎉 Draft complete! All 20 picks locked in.','ok');
@@ -1485,6 +1471,7 @@ function updateCountdown(){
     let _prevPickIdx = S.pickIdx;
     window._fbRef.on('value', snap => {
       const data = snap.val();
+      console.log('[FB listener] pickIdx=', data && data.pickIdx, 'Zdawg picks=', data && data.picks && data.picks.Zdawg ? Object.keys(data.picks.Zdawg).length : 0);
 
       if (!data) {
         // Nothing in Firebase yet — push local state up if we have picks
