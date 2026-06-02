@@ -540,15 +540,14 @@ const curPlayer = () => {
   return getPlayerOrder()[DRAFT_ORDER[S.pickIdx]];
 };
 const isDone     = () => S.pickIdx >= DRAFT_ORDER.length;
-const allPicked  = () => Object.values(S.picks).flat().map(t=>t.name);
 const getPicks   = (p) => { const v = S.picks[p]; if (!v) return []; return Array.isArray(v) ? v : toArray(v); };
-const rankSum    = (p) => getPicks(p).reduce((s,t)=>s+t.rank,0);
+const allPicked  = () => PLAYERS.flatMap(p => getPicks(p)).filter(Boolean).map(t=>t.name);
+const liveRank   = (t) => { const found = TEAMS.find(x=>x.name===t.name); return found ? found.rank : (Number(t.rank)||0); };
+const rankSum    = (p) => getPicks(p).reduce((s,t)=>s+liveRank(t),0);
 const getMatch   = (n) => S.matches[n] || {results:[],stage:'Group',cost:0};
 
 function canAffordPick(player, team) {
   const picks = getPicks(player);
-  // Always look up rank from TEAMS array — Firebase may mangle stored objects
-  const liveRank = (t) => { const found = TEAMS.find(x=>x.name===t.name); return found ? found.rank : (Number(t.rank)||0); };
   const newPicks = [...picks, team];
   const newSum = newPicks.reduce((s,t)=>s+liveRank(t),0);
   const remaining = MAX_PICKS - newPicks.length;
