@@ -521,10 +521,23 @@ let chart = null;
 // ============================================================
 // HELPERS
 // ============================================================
+
+// Firebase converts arrays to {0:'x', 1:'y'...} objects — always normalise back
+function toArray(val) {
+  if (!val) return null;
+  if (Array.isArray(val)) return val;
+  // Object with numeric keys from Firebase
+  return Object.keys(val).sort((a,b)=>Number(a)-Number(b)).map(k=>val[k]);
+}
+
+function getPlayerOrder() {
+  const order = toArray(S.playerOrder);
+  return order && order.length === 4 ? order : [...PLAYERS];
+}
+
 const curPlayer = () => {
   if(S.pickIdx >= DRAFT_ORDER.length) return null;
-  const order = S.playerOrder || PLAYERS;
-  return order[DRAFT_ORDER[S.pickIdx]];
+  return getPlayerOrder()[DRAFT_ORDER[S.pickIdx]];
 };
 const isDone     = () => S.pickIdx >= DRAFT_ORDER.length;
 const allPicked  = () => Object.values(S.picks).flat().map(t=>t.name);
@@ -593,7 +606,7 @@ function renderTurnCard() {
   }
   banner.style.display='none';
 
-  const po = S.playerOrder || PLAYERS;
+  const po = getPlayerOrder();
 
   // ── Draft order card (always visible before picks start) ──
   const drawSection = S.pickIdx === 0 ? `
@@ -641,7 +654,7 @@ function renderPlayersGrid() {
   const grid = document.getElementById('players-grid');
   const cp = curPlayer();
   // Always render in current draft order so card #1 = first drafter
-  const displayOrder = S.playerOrder && S.playerOrder.length === 4 ? S.playerOrder : PLAYERS;
+  const displayOrder = getPlayerOrder();
   grid.innerHTML = displayOrder.map((p, draftPos) => {
     const picks = getPicks(p);
     const rs = rankSum(p);
@@ -1477,7 +1490,8 @@ function updateCountdown(){
       S = data;
       if (!S.changes)     S.changes     = {Namimoto:0,Adbrahm:0,Abu:0,Zdawg:0};
       if (!S.changeLog)   S.changeLog   = {Namimoto:[],Adbrahm:[],Abu:[],Zdawg:[]};
-      if (!S.playerOrder) S.playerOrder = ['Namimoto','Adbrahm','Abu','Zdawg'];
+      // Normalise playerOrder — Firebase turns arrays into {0:'x',1:'y'...} objects
+      S.playerOrder = toArray(S.playerOrder) || ['Namimoto','Adbrahm','Abu','Zdawg'];
       PLAYERS.forEach(p => {
         if (!S.changes[p])   S.changes[p]   = 0;
         if (!S.changeLog[p]) S.changeLog[p] = [];
