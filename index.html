@@ -749,13 +749,19 @@ function renderConstraint() {
 // PICK A TEAM
 // ============================================================
 function pickTeam(teamName) {
-  if(isDone()) return;
+  const done = isDone();
   const p = curPlayer();
+  const picks = getPicks(p);
   const team = TEAMS.find(t=>t.name===teamName);
+  const afford = team ? canAffordPick(p, team) : false;
+  const newSum = team ? [...picks, team].reduce((s,t)=>s+liveRank(t),0) : 0;
+  console.log(`[pickTeam] team=${teamName} player=${p} pickIdx=${S.pickIdx} done=${done} picks=${picks.length} afford=${afford} newSum=${newSum}`);
+  toast(`DBG: player=${p} idx=${S.pickIdx} done=${done} picks=${picks.length} afford=${afford} sum=${newSum}`,'ok');
+
+  if(done) return;
   if(!team) return;
 
-  if(!canAffordPick(p, team)){
-    const picks = getPicks(p);
+  if(!afford){
     if(picks.length===MAX_PICKS-1){
       toast(`❌ ${team.name} won't meet the 80-pt budget. Pick a lower-ranked team!`,'err');
     } else {
@@ -769,6 +775,7 @@ function pickTeam(teamName) {
   S.pickIdx++;
   if(!S.matches[team.name]) S.matches[team.name]={results:[],stage:'Group',cost:0};
   save();
+  console.log(`[pickTeam] saved. new pickIdx=${S.pickIdx} picks=${S.picks[p].length}`);
   renderAll();
 
   if(isDone()){
