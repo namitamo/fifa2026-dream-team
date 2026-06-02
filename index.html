@@ -774,13 +774,19 @@ function pickTeam(teamName) {
     return;
   }
 
-  S.picks[p] = getPicks(p);  // normalise Firebase object-format arrays to real arrays before push
-  S.picks[p].push(team);
-  S.pickIdx++;
-  if(!S.matches[team.name]) S.matches[team.name]={results:[],stage:'Group',cost:0};
-  save();
-  console.log(`[pickTeam] saved. new pickIdx=${S.pickIdx} picks=${S.picks[p].length}`);
-  renderAll();
+  try {
+    S.picks[p] = getPicks(p);
+    toast(`DBG2: picks before push=${S.picks[p].length} isArray=${Array.isArray(S.picks[p])}`,'ok');
+    S.picks[p].push(team);
+    S.pickIdx++;
+    if(!S.matches) S.matches = {};
+    if(!S.matches[team.name]) S.matches[team.name]={results:[],stage:'Group',cost:0};
+    save();
+    renderAll();
+  } catch(e) {
+    toast(`❌ JS Error: ${e.message}`,'err');
+    console.error('[pickTeam]', e);
+  }
 
   if(isDone()){
     toast('🎉 Draft complete! All 20 picks locked in.','ok');
