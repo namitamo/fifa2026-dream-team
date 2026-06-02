@@ -764,7 +764,7 @@ function pickTeam(teamName) {
     return;
   }
 
-  if(!S.picks[p]) S.picks[p] = [];   // guard: Firebase nulls empty arrays
+  S.picks[p] = getPicks(p);  // normalise Firebase object-format arrays to real arrays before push
   S.picks[p].push(team);
   S.pickIdx++;
   if(!S.matches[team.name]) S.matches[team.name]={results:[],stage:'Group',cost:0};
