@@ -1488,14 +1488,17 @@ function updateCountdown(){
 
       // Merge remote state
       S = data;
-      if (!S.changes)     S.changes     = {Namimoto:0,Adbrahm:0,Abu:0,Zdawg:0};
-      if (!S.changeLog)   S.changeLog   = {Namimoto:[],Adbrahm:[],Abu:[],Zdawg:[]};
-      // Normalise playerOrder — Firebase turns arrays into {0:'x',1:'y'...} objects
+      // Firebase silently drops empty arrays/objects — restore before touching any field
+      if (!S.picks)     S.picks     = {};
+      if (!S.matches)   S.matches   = {};
+      if (!S.changes)   S.changes   = {};
+      if (!S.changeLog) S.changeLog = {};
+      // Normalise playerOrder — Firebase can return arrays as {0:'x',1:'y'...} objects
       S.playerOrder = toArray(S.playerOrder) || ['Namimoto','Adbrahm','Abu','Zdawg'];
       PLAYERS.forEach(p => {
+        if (!S.picks[p])     S.picks[p]     = [];
         if (!S.changes[p])   S.changes[p]   = 0;
         if (!S.changeLog[p]) S.changeLog[p] = [];
-        if (!S.picks[p])     S.picks[p]     = [];  // Firebase drops empty arrays
       });
       localStorage.setItem('fifa2026v2', JSON.stringify(S));
 
