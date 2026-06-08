@@ -1301,6 +1301,13 @@ function renderSchedule() {
     return t ? t.flag : '';
   }
 
+  function bstToIST(t) {
+    const [h, m] = t.split(':').map(Number);
+    let mins = h * 60 + m + 4 * 60 + 30; // BST+4h30 = IST
+    if (mins >= 24 * 60) mins -= 24 * 60;
+    return String(Math.floor(mins / 60)).padStart(2,'0') + ':' + String(mins % 60).padStart(2,'0');
+  }
+
   function matchRow(m) {
     const hOwner = owned[m.home];
     const aOwner = owned[m.away];
@@ -1310,7 +1317,7 @@ function renderSchedule() {
     return `<div class="sched-match ${highlighted?'owned':''}">
       <div class="sched-home">${teamFlag(m.home)} <span>${m.home}</span>${hBadge}</div>
       <div class="sched-mid">
-        <span class="sched-time">${m.t}<small style="font-size:9px;color:var(--muted)"> UK</small></span>
+        <span class="sched-time">${bstToIST(m.t)}<small style="font-size:9px;color:var(--muted)"> IST</small></span>
         <span class="sched-vs">vs</span>
         <span style="font-size:9px;color:var(--muted);text-align:center">${m.venue}</span>
       </div>
