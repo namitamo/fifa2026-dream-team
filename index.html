@@ -645,65 +645,93 @@ const ESPN_NAME_MAP = {
 };
 function espnName(n){ return ESPN_NAME_MAP[n] || n; }
 
+// ESPN slug candidates — try each in order until one returns events
+const ESPN_SLUGS = ['FIFA.World','fifa.world','FIFA.WORLD','FIFA.WC'];
+
 let _fetchingResults = false;
 async function fetchMatchResults(silent=false) {
-  if (_fetchingResults) return;
+  if (_fetchingResults) { if(!silent) toast('Already fetching…','ok'); return; }
   _fetchingResults = true;
-  if (!S.matchResults) S.matchResults = {};
+  try {
+    if (!S.matchResults) S.matchResults = {};
 
-  // Collect unique dates that have completed matches we don't yet have results for
-  const missingDates = [...new Set(
-    SCHEDULE.filter(m => isMatchComplete(m) && !S.matchResults[mkId(m)])
-           .map(m => m.d)
-  )];
-  if (!missingDates.length) { _fetchingResults = false; return; }
+    const missingDates = [...new Set(
+      SCHEDULE.filter(m => isMatchComplete(m) && !S.matchResults[mkId(m)]).map(m => m.d)
+    )];
 
-  let anyNew = false;
-  for (const date of missingDates) {
-    const dateStr = date.replace(/-/g,'');
-    try {
-      const resp = await fetch(
-        `https://site.api.espn.com/apis/site/v2/sports/soccer/FIFA.World/scoreboard?dates=${dateStr}`,
-        {signal: AbortSignal.timeout(8000)}
-      );
-      if (!resp.ok) continue;
-      const data = await resp.json();
-      for (const event of (data.events || [])) {
-        const comp = (event.competitions || [])[0];
-        if (!comp?.status?.type?.completed) continue;
-        const home = comp.competitors?.find(c=>c.homeAway==='home');
-        const away = comp.competitors?.find(c=>c.homeAway==='away');
-        if (!home || !away) continue;
-        const hn = espnName(home.team?.displayName||'');
-        const an = espnName(away.team?.displayName||'');
-        const hs = parseInt(home.score);
-        const as_ = parseInt(away.score);
-        if (isNaN(hs) || isNaN(as_)) continue;
-        // Find our matching SCHEDULE entry
-        const sm = SCHEDULE.find(m => m.d === date && (
-          (espnName(m.home)===hn && espnName(m.away)===an) ||
-          (espnName(m.home)===an && espnName(m.away)===hn)
-        ));
-        if (!sm) continue;
-        const id = mkId(sm);
-        // Store scores aligned to our home/away order
-        const aligned = espnName(sm.home)===hn
-          ? {home:hs, away:as_} : {home:as_, away:hs};
-        if (!S.matchResults[id] ||
-            S.matchResults[id].home !== aligned.home ||
-            S.matchResults[id].away !== aligned.away) {
-          S.matchResults[id] = aligned;
-          anyNew = true;
+    if (!missingDates.length) {
+      if (!silent) toast('Results up to date ✓','ok');
+      return;
+    }
+
+    if (!silent) toast('Fetching ESPN results…','ok');
+    let anyNew = false;
+    let totalFetchErrors = 0;
+
+    for (const date of missingDates) {
+      const dateStr = date.replace(/-/g,'');
+      let gotEvents = false;
+
+      for (const slug of ESPN_SLUGS) {
+        try {
+          const resp = await fetch(
+            `https://site.api.espn.com/apis/site/v2/sports/soccer/${slug}/scoreboard?dates=${dateStr}`,
+            {signal: AbortSignal.timeout(8000)}
+          );
+          if (!resp.ok) { console.warn(`ESPN ${slug} ${dateStr}: HTTP ${resp.status}`); continue; }
+          const data = await resp.json();
+          const events = data.events || [];
+          console.log(`ESPN ${slug} ${dateStr}: ${events.length} events`);
+          if (!events.length) continue; // try next slug
+
+          gotEvents = true;
+          for (const event of events) {
+            const comp = (event.competitions || [])[0];
+            if (!comp?.status?.type?.completed) continue;
+            const home = comp.competitors?.find(c=>c.homeAway==='home');
+            const away = comp.competitors?.find(c=>c.homeAway==='away');
+            if (!home || !away) continue;
+            const hn = espnName(home.team?.displayName||'');
+            const an = espnName(away.team?.displayName||'');
+            const hs = parseInt(home.score);
+            const as_ = parseInt(away.score);
+            if (isNaN(hs)||isNaN(as_)) continue;
+            const sm = SCHEDULE.find(m => m.d === date && (
+              (espnName(m.home)===hn && espnName(m.away)===an) ||
+              (espnName(m.home)===an && espnName(m.away)===hn)
+            ));
+            if (!sm) { console.log(`ESPN: no SCHEDULE match for ${hn} vs ${an} on ${date}`); continue; }
+            const id = mkId(sm);
+            const aligned = espnName(sm.home)===hn ? {home:hs, away:as_} : {home:as_, away:hs};
+            if (!S.matchResults[id] ||
+                S.matchResults[id].home!==aligned.home ||
+                S.matchResults[id].away!==aligned.away) {
+              S.matchResults[id] = aligned;
+              anyNew = true;
+            }
+          }
+          break; // this slug worked, don't try others for this date
+        } catch(e) {
+          console.warn(`ESPN ${slug} ${dateStr}:`, e.message);
+          totalFetchErrors++;
         }
       }
-    } catch(e) { console.warn('ESPN fetch error for', date, e.message); }
-  }
-  _fetchingResults = false;
-  if (anyNew) {
-    save();
-    if (document.getElementById('tab-matches').classList.contains('active')) renderMatches();
-    if (document.getElementById('tab-scoreboard').classList.contains('active')) renderScoreboard();
-    if (!silent) toast('⚽ Match results updated','ok');
+      if (!gotEvents) console.warn(`No ESPN events found for ${date} across all slugs`);
+    }
+
+    if (anyNew) {
+      save();
+      if (document.getElementById('tab-matches').classList.contains('active')) renderMatches();
+      if (document.getElementById('tab-scoreboard').classList.contains('active')) renderScoreboard();
+      if (!silent) toast('⚽ Match results updated','ok');
+    } else if (!silent) {
+      if (totalFetchErrors > 0)
+        toast('⚠️ ESPN fetch failed — open console for details','err');
+      else
+        toast('No completed results found yet','ok');
+    }
+  } finally {
+    _fetchingResults = false;
   }
 }
 
@@ -1061,13 +1089,17 @@ function renderMatches(){
         const stageLabel = normStage(m.stage).startsWith('Group') ? `Group ${team.group}` : normStage(m.stage);
         const isHome = m.home === team.name;
 
-        // Convert BST to IST for display
+        // Convert BST to IST for display (pure UTC arithmetic — no local timezone)
         const [h,min] = m.t.split(':').map(Number);
         let istMins = h*60 + min + 4*60 + 30;
-        let istDay = istMins >= 24*60 ? 1 : 0;
-        istMins %= 24*60;
-        const istDate = (() => { const d = new Date(m.d+'T00:00:00'); d.setDate(d.getDate()+istDay); return d.toLocaleDateString('en-IN',{day:'numeric',month:'short'}); })();
+        const istNextDay = istMins >= 24*60;
+        if (istNextDay) istMins -= 24*60;
         const istTime = String(Math.floor(istMins/60)).padStart(2,'0')+':'+String(istMins%60).padStart(2,'0');
+        const istDate = (() => {
+          const [yr,mo,dy] = m.d.split('-').map(Number);
+          const d = new Date(Date.UTC(yr, mo-1, dy + (istNextDay ? 1 : 0)));
+          return d.toLocaleDateString('en-IN',{day:'numeric',month:'short',timeZone:'UTC'});
+        })();
 
         if (scores && scores.home != null) {
           const outcome = teamOutcome(team.name, m, scores);
@@ -1503,7 +1535,8 @@ function renderSchedule() {
     return t ? t.flag : '';
   }
 
-  // Convert BST date+time to IST — returns {date, time, nextDay}
+  // Convert BST date+time to IST — returns {date, time}
+  // Uses UTC arithmetic to avoid local-timezone date confusion
   function toIST(bstDate, bstTime) {
     const [h, m] = bstTime.split(':').map(Number);
     let mins = h * 60 + m + 4 * 60 + 30; // BST → IST (+4h30)
@@ -1512,9 +1545,9 @@ function renderSchedule() {
     const time = String(Math.floor(mins / 60)).padStart(2,'0') + ':' + String(mins % 60).padStart(2,'0');
     let date = bstDate;
     if (nextDay) {
-      const d = new Date(bstDate + 'T00:00:00');
-      d.setDate(d.getDate() + 1);
-      date = d.toISOString().slice(0,10);
+      const [yr, mo, dy] = bstDate.split('-').map(Number);
+      const d = new Date(Date.UTC(yr, mo - 1, dy + 1)); // pure UTC, no local timezone
+      date = d.toISOString().slice(0, 10);
     }
     return { date, time };
   }
