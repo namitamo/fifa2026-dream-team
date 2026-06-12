@@ -92,16 +92,25 @@
     /* CHART CARD */
     .chart-card{background:white;border-radius:10px;padding:16px;margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,.07)}
     /* MATCHES */
-    .match-block{background:white;border-radius:10px;overflow:hidden;margin-bottom:10px;box-shadow:0 1px 4px rgba(0,0,0,.07)}
-    .match-header{padding:8px 14px;font-weight:700;font-size:13px;color:white}
-    .match-row{display:flex;align-items:center;gap:8px;padding:9px 13px;border-bottom:1px solid #f5f5f5;flex-wrap:wrap}
-    .match-row:last-child{border-bottom:none}
-    .match-team-name{font-size:13px;flex:1;min-width:100px;font-weight:600}
-    .result-dot{display:inline-block;width:20px;height:20px;border-radius:50%;text-align:center;line-height:20px;font-size:10px;font-weight:800;color:white;cursor:pointer;margin:1px}
-    .rsel,.stagesel,.costinput{padding:5px 7px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:white;cursor:pointer}
-    .costinput{width:70px}
-    .clear-btn{padding:3px 7px;border:1px solid #ddd;border-radius:5px;cursor:pointer;font-size:11px;background:white;color:var(--muted)}
-    .clear-btn:hover{background:#fee;border-color:#e74c3c;color:#e74c3c}
+    .match-block{background:white;border-radius:10px;overflow:hidden;margin-bottom:12px;box-shadow:0 1px 4px rgba(0,0,0,.07)}
+    .match-header{padding:10px 14px;font-weight:700;font-size:13px;color:white}
+    .team-match-block{border-bottom:2px solid #f0f0f0;padding-bottom:4px;margin-bottom:4px}
+    .team-match-block:last-child{border-bottom:none}
+    .team-match-hdr{display:flex;justify-content:space-between;align-items:center;padding:8px 13px 4px;font-size:12px;font-weight:700;color:var(--navy)}
+    .auto-match-row{display:flex;align-items:center;gap:8px;padding:7px 13px;border-bottom:1px solid #f8f8f8;flex-wrap:wrap;font-size:12px}
+    .auto-match-row:last-child{border-bottom:none}
+    .auto-match-row.pending{background:#fffbf0}
+    .auto-match-stage{font-size:10px;background:#f0f0f0;padding:1px 6px;border-radius:8px;color:var(--muted);white-space:nowrap;font-weight:600}
+    .auto-match-teams{flex:1;min-width:160px;font-weight:600}
+    .auto-match-score{font-size:13px;font-weight:800;color:var(--navy);min-width:32px;text-align:center}
+    .auto-match-outcome{padding:2px 7px;border-radius:8px;color:white;font-size:10px;font-weight:800}
+    .auto-match-pts{font-weight:800;color:#27ae60;min-width:24px}
+    .auto-match-meta{color:var(--muted);font-size:10px;margin-left:auto}
+    .auto-edit-btn{background:none;border:none;cursor:pointer;font-size:12px;padding:0 2px;opacity:.5}
+    .auto-edit-btn:hover{opacity:1}
+    .stage-bonus-row{padding:7px 13px;font-size:12px;background:#f0fff4;color:#27ae60;border-top:1px solid #d4edda}
+    .slot-swap-btn{padding:1px 6px;border-radius:5px;border:1px solid var(--border);background:var(--card);font-size:10px;cursor:pointer;color:var(--muted);flex-shrink:0}
+    .slot-swap-btn:hover{background:#fff3cd;border-color:#f39c12}
     /* RULES */
     .rules-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
     .rule-card{background:white;border-radius:10px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,.07)}
@@ -291,7 +300,7 @@
 <!-- ===== MATCHES TAB ===== -->
 <div id="tab-matches" class="tab-content">
   <div class="info-box">
-    ⏱ Tournament begins <strong>June 11, 2026</strong>. Enter match results and update stage as teams progress. Points auto-calculate.
+    ⚽ Completed matches appear automatically. Any player can enter the score once — it syncs to everyone. Points and stage bonuses calculate automatically.
   </div>
   <div id="match-list"></div>
 </div>
@@ -473,6 +482,46 @@ const STAGE_BONUS = {
   'Group':0,'Round of 32':10,'Round of 16':20,
   'Quarterfinal':30,'Semifinal':40,'Final':50,'Champions':100
 };
+const STAGE_ORDER = ['Group','Round of 32','Round of 16','Quarterfinal','Semifinal','Final','Champions'];
+
+// Safe Firebase key from match: no . # $ / [ ] or spaces
+const mkId = m => `${m.d}_${m.home.replace(/[.#$\/\[\]\s]/g,'_')}_${m.away.replace(/[.#$\/\[\]\s]/g,'_')}`;
+// Normalise stage string (strip emoji etc) for STAGE_BONUS lookup
+const normStage = s => s.replace(/\s*🏆\s*/g,'').trim();
+// Is this match finished? (kickoff BST - 1h = UTC, + 105 min)
+function isMatchComplete(m) {
+  const [yr,mo,dy] = m.d.split('-').map(Number);
+  const [h,min] = m.t.split(':').map(Number);
+  const kickoffUTC = Date.UTC(yr,mo-1,dy,h-1,min);
+  return Date.now() > kickoffUTC + 105*60*1000;
+}
+// W/D/L from a specific team's perspective given stored scores {home,away}
+function teamOutcome(teamName, m, scores) {
+  if (!scores || scores.home == null) return null;
+  const h = Number(scores.home), a = Number(scores.away);
+  if (m.home === teamName) return h > a ? 'Win' : h === a ? 'Draw' : 'Lose';
+  if (m.away === teamName) return a > h ? 'Win' : a === h ? 'Draw' : 'Lose';
+  return null;
+}
+// Highest stage a team has played at (using S.matchResults)
+function teamHighestStage(teamName) {
+  let best = 'Group';
+  SCHEDULE.forEach(m => {
+    if (m.home !== teamName && m.away !== teamName) return;
+    const scores = S.matchResults && S.matchResults[mkId(m)];
+    if (!scores || scores.home == null) return;
+    const stage = normStage(m.stage);
+    const mapped = stage.startsWith('Group') ? 'Group' : stage;
+    const idx = STAGE_ORDER.indexOf(mapped);
+    if (idx < 0) return;
+    // Champions: won the final
+    if (mapped === 'Final' && teamOutcome(teamName, m, scores) === 'Win') {
+      best = 'Champions'; return;
+    }
+    if (STAGE_ORDER.indexOf(mapped) > STAGE_ORDER.indexOf(best)) best = mapped;
+  });
+  return best;
+}
 const MIN_BUDGET = 80;
 const MAX_PICKS = 5;
 const MAX_CHANGES = 2;
@@ -486,12 +535,13 @@ function loadState() {
     if(s) return JSON.parse(s);
   } catch(e) {}
   return {
-    picks:       {Namimoto:[],Adbrahm:[],Abu:[],Zdawg:[]},
-    pickIdx:     0,
-    matches:     {},
-    changes:     {Namimoto:0, Adbrahm:0, Abu:0, Zdawg:0},
-    changeLog:   {Namimoto:[], Adbrahm:[], Abu:[], Zdawg:[]},
-    playerOrder: ['Namimoto','Adbrahm','Abu','Zdawg']
+    picks:        {Namimoto:[],Adbrahm:[],Abu:[],Zdawg:[]},
+    pickIdx:      0,
+    matches:      {},
+    matchResults: {},
+    changes:      {Namimoto:0, Adbrahm:0, Abu:0, Zdawg:0},
+    changeLog:    {Namimoto:[], Adbrahm:[], Abu:[], Zdawg:[]},
+    playerOrder:  ['Namimoto','Adbrahm','Abu','Zdawg']
   };
 }
 function save() {
@@ -503,9 +553,10 @@ function save() {
 
 let S = loadState();
 // Migrate old saves
-if(!S.changes)     S.changes     = {Namimoto:0,Adbrahm:0,Abu:0,Zdawg:0};
-if(!S.changeLog)   S.changeLog   = {Namimoto:[],Adbrahm:[],Abu:[],Zdawg:[]};
-if(!S.playerOrder) S.playerOrder = ['Namimoto','Adbrahm','Abu','Zdawg'];
+if(!S.changes)      S.changes      = {Namimoto:0,Adbrahm:0,Abu:0,Zdawg:0};
+if(!S.changeLog)    S.changeLog    = {Namimoto:[],Adbrahm:[],Abu:[],Zdawg:[]};
+if(!S.playerOrder)  S.playerOrder  = ['Namimoto','Adbrahm','Abu','Zdawg'];
+if(!S.matchResults) S.matchResults = {};
 PLAYERS.forEach(p=>{
   if(!S.changes[p])   S.changes[p]=0;
   if(!S.changeLog[p]) S.changeLog[p]=[];
@@ -565,10 +616,17 @@ function canAffordPick(player, team) {
 function playerScore(p) {
   let matchPts=0, stageBonus=0, cost=0;
   for(const t of getPicks(p)) {
-    const m = getMatch(t.name);
-    matchPts  += (m.results||[]).reduce((s,r)=>s+(RESULT_PTS[r]||0),0);
-    stageBonus += STAGE_BONUS[m.stage]||0;
-    cost += m.cost||0;
+    // Match points: from S.matchResults (auto-detected past matches)
+    SCHEDULE.forEach(m => {
+      if (m.home !== t.name && m.away !== t.name) return;
+      const scores = S.matchResults && S.matchResults[mkId(m)];
+      const outcome = teamOutcome(t.name, m, scores);
+      if (outcome) matchPts += RESULT_PTS[outcome] || 0;
+    });
+    // Stage bonus: from highest stage reached in matchResults
+    stageBonus += STAGE_BONUS[teamHighestStage(t.name)] || 0;
+    // Swap cost penalty
+    cost += (getMatch(t.name).cost || 0);
   }
   return {matchPts, stageBonus, cost, total: matchPts+stageBonus+cost};
 }
@@ -665,8 +723,15 @@ function renderPlayersGrid() {
     if(picks.length === MAX_PICKS){ badgeClass = rs>=MIN_BUDGET?'rank-ok':'rank-bad'; budgetLabel=`${rs}/80 ${rs>=MIN_BUDGET?'✓':'✗'}`; }
     else if(picks.length > 0){ badgeClass = 'rank-warn'; }
 
+    const changesLeft = MAX_CHANGES - (S.changes[p]||0);
     const slots = Array.from({length:5},(_,i)=>{
-      if(picks[i]) return `<div class="pick-slot"><span class="pick-flag">${picks[i].flag}</span><span class="pick-team">${picks[i].name}</span><span class="pick-rank-num">#${picks[i].rank}</span></div>`;
+      if(picks[i]) {
+        const canSwap = isDone() && changesLeft > 0;
+        const swapBtn = canSwap
+          ? `<button class="slot-swap-btn" onclick="openSwap('${p}','${picks[i].name.replace(/'/g,"\\'")}')" title="Swap this team">🔄</button>`
+          : '';
+        return `<div class="pick-slot" style="display:flex;align-items:center;gap:4px"><span class="pick-flag">${picks[i].flag}</span><span class="pick-team" style="flex:1">${picks[i].name}</span><span class="pick-rank-num">#${picks[i].rank}</span>${swapBtn}</div>`;
+      }
       return `<div class="pick-slot empty">Pick ${i+1}</div>`;
     }).join('');
 
@@ -880,95 +945,148 @@ function renderScoreboard(){
 // MATCHES
 // ============================================================
 function renderMatches(){
-  const el=document.getElementById('match-list');
-  const hasPicks = Object.values(S.picks).some(a=>a.length>0);
+  const el = document.getElementById('match-list');
+  const hasPicks = Object.values(S.picks).some(a => a && (Array.isArray(a) ? a.length : Object.keys(a).length) > 0);
   if(!hasPicks){ el.innerHTML='<p style="color:var(--muted);font-style:italic">Complete the draft first to track match results.</p>'; return; }
 
-  el.innerHTML = PLAYERS.map(p=>{
-    const picks=getPicks(p);
+  if(!S.matchResults) S.matchResults = {};
+
+  el.innerHTML = PLAYERS.map(p => {
+    const picks = getPicks(p);
     if(!picks.length) return '';
-    const color=P_COLORS[p];
-    const changesUsed = S.changes[p]||0;
-    const changesLeft = MAX_CHANGES - changesUsed;
-    const changesClass = changesUsed===0?'changes-ok':changesUsed===1?'changes-warn':'changes-full';
-    const log = S.changeLog[p]||[];
+    const color = P_COLORS[p];
+    const score = playerScore(p);
+    const log = S.changeLog[p] || [];
 
     const changeLogHtml = log.length ? `
       <div class="change-log">
-        <div class="change-log-title">Change History</div>
+        <div class="change-log-title">Swap History</div>
         ${log.map(c=>`<div class="change-entry">
-          <span>${c.fromFlag} ${c.from}</span>
-          <span style="color:#aaa">→</span>
+          <span>${c.fromFlag} ${c.from}</span><span style="color:#aaa">→</span>
           <span>${c.toFlag} ${c.to}</span>
-          <span style="color:#e74c3c;font-weight:700;margin-left:auto">${c.cost||'Free'}</span>
+          <span style="color:#e74c3c;font-weight:700;margin-left:auto">${c.cost ? c.cost+'pts' : 'Free'}</span>
           <span style="color:var(--muted);font-size:10px">${c.stageLabel}</span>
         </div>`).join('')}
       </div>` : '';
 
+    const teamsHtml = picks.map(team => {
+      // All scheduled matches for this team, sorted by date+time
+      const teamMatches = SCHEDULE.filter(m => m.home === team.name || m.away === team.name);
+      const completedMatches = teamMatches.filter(m => isMatchComplete(m));
+      const highestStage = teamHighestStage(team.name);
+      const stageBonusVal = STAGE_BONUS[highestStage] || 0;
+
+      const matchRowsHtml = completedMatches.map(m => {
+        const id = mkId(m);
+        const scores = S.matchResults[id];
+        const opponent = m.home === team.name ? m.away : m.home;
+        const oppTeam = TEAMS.find(t => t.name === opponent);
+        const oppFlag = oppTeam ? oppTeam.flag : '';
+        const stageLabel = normStage(m.stage).startsWith('Group') ? `Group ${team.group}` : normStage(m.stage);
+        const isHome = m.home === team.name;
+
+        // Convert BST to IST for display
+        const [h,min] = m.t.split(':').map(Number);
+        let istMins = h*60 + min + 4*60 + 30;
+        let istDay = istMins >= 24*60 ? 1 : 0;
+        istMins %= 24*60;
+        const istDate = (() => { const d = new Date(m.d+'T00:00:00'); d.setDate(d.getDate()+istDay); return d.toLocaleDateString('en-IN',{day:'numeric',month:'short'}); })();
+        const istTime = String(Math.floor(istMins/60)).padStart(2,'0')+':'+String(istMins%60).padStart(2,'0');
+
+        if (scores && scores.home != null) {
+          const outcome = teamOutcome(team.name, m, scores);
+          const pts = RESULT_PTS[outcome] || 0;
+          const outcomeColor = outcome==='Win'?'#27ae60':outcome==='Draw'?'#f39c12':'#e74c3c';
+          const scoreStr = isHome ? `${scores.home}–${scores.away}` : `${scores.away}–${scores.home}`;
+          return `<div class="auto-match-row">
+            <span class="auto-match-stage">${stageLabel}</span>
+            <span class="auto-match-teams">${team.flag} ${team.name} <span style="color:var(--muted);font-size:10px">${isHome?'vs':'@'}</span> ${oppFlag} ${opponent}</span>
+            <span class="auto-match-score">${scoreStr}</span>
+            <span class="auto-match-outcome" style="background:${outcomeColor}">${outcome}</span>
+            <span class="auto-match-pts">+${pts}</span>
+            <span class="auto-match-meta">${istDate} ${istTime} IST</span>
+            <button class="auto-edit-btn" onclick="editMatchResult('${id}','${team.name.replace(/'/g,"\\'")}','${opponent.replace(/'/g,"\\'")}',${isHome})" title="Edit result">✏️</button>
+          </div>`;
+        } else {
+          // Completed but no result entered yet
+          return `<div class="auto-match-row pending">
+            <span class="auto-match-stage">${stageLabel}</span>
+            <span class="auto-match-teams">${team.flag} ${team.name} <span style="color:var(--muted);font-size:10px">${isHome?'vs':'@'}</span> ${oppFlag} ${opponent}</span>
+            <span style="display:flex;align-items:center;gap:4px">
+              <input type="number" min="0" max="20" placeholder="0" style="width:36px;padding:2px 4px;border-radius:4px;border:1px solid var(--border);text-align:center;font-size:12px" id="hs_${id}">
+              <span style="color:var(--muted)">–</span>
+              <input type="number" min="0" max="20" placeholder="0" style="width:36px;padding:2px 4px;border-radius:4px;border:1px solid var(--border);text-align:center;font-size:12px" id="as_${id}">
+              <button onclick="saveMatchResult('${id}')" style="padding:2px 8px;border-radius:4px;border:none;background:#3498db;color:white;font-size:11px;cursor:pointer">Save</button>
+            </span>
+            <span style="color:var(--muted);font-size:10px;font-style:italic">awaiting result</span>
+            <span class="auto-match-meta">${istDate} ${istTime} IST</span>
+          </div>`;
+        }
+      }).join('');
+
+      const stageBonusHtml = stageBonusVal > 0 ? `
+        <div class="stage-bonus-row">
+          🏅 Stage bonus — reached <strong>${highestStage}</strong>: <span style="color:#27ae60;font-weight:700">+${stageBonusVal} pts</span>
+        </div>` : '';
+
+      return `<div class="team-match-block">
+        <div class="team-match-hdr">
+          <span>${team.flag} ${team.name} <small style="font-weight:400;color:var(--muted)">Grp ${team.group} · #${team.rank}</small></span>
+          <span style="font-size:11px;color:var(--muted)">${completedMatches.length}/${teamMatches.length} played</span>
+        </div>
+        ${completedMatches.length === 0
+          ? `<div style="padding:8px 12px;color:var(--muted);font-size:12px;font-style:italic">No completed matches yet</div>`
+          : matchRowsHtml}
+        ${stageBonusHtml}
+      </div>`;
+    }).join('');
+
     return `<div class="match-block">
-      <div class="match-header" style="background:${color};display:flex;justify-content:space-between;align-items:center">
-        <span>${p}'s Teams · ${playerScore(p).total} pts</span>
-        <span class="changes-used ${changesClass}">🔄 ${changesLeft}/${MAX_CHANGES} changes left</span>
+      <div class="match-header" style="background:${color};display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px">
+        <span>${p}'s Teams</span>
+        <span style="font-size:13px">⚽ ${score.matchPts} + 🏅 ${score.stageBonus}${score.cost?` − ${Math.abs(score.cost)}`:''} = <strong>${score.total} pts</strong></span>
       </div>
       ${changeLogHtml}
-      ${picks.map(team=>{
-        const m=getMatch(team.name);
-        const resultDots=(m.results||[]).map(r=>`<span class="result-dot" style="background:${r==='Win'?'#27ae60':r==='Draw'?'#f39c12':'#e74c3c'}" title="${r}">${r[0]}</span>`).join('');
-        const canSwap = isDone() && changesLeft > 0;
-        return `<div class="match-row">
-          <span style="font-size:18px">${team.flag}</span>
-          <span class="match-team-name">${team.name} <small style="color:var(--muted);font-weight:400">Grp ${team.group} · #${team.rank}</small></span>
-          <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
-            ${resultDots}
-            <select class="rsel" onchange="addResult('${team.name}',this)" title="Add a match result">
-              <option value="">+Result</option>
-              <option value="Win">Win +10</option>
-              <option value="Draw">Draw +5</option>
-              <option value="Lose">Lose +0</option>
-            </select>
-          </div>
-          <select class="stagesel" onchange="setStage('${team.name}',this.value)" title="Stage reached">
-            ${Object.entries(STAGE_BONUS).map(([s,b])=>`<option value="${s}" ${(m.stage||'Group')===s?'selected':''}>${s}${b?` (+${b})`:' (0)'}</option>`).join('')}
-          </select>
-          <input class="costinput" type="number" value="${m.cost||0}" onchange="setCost('${team.name}',this.value)" placeholder="cost" title="Cost adjustment" step="10">
-          <button class="swap-btn" onclick="openSwap('${p}','${team.name}')" ${!canSwap?'disabled':''} title="${!isDone()?'Complete draft first':!canSwap?'No changes left':'Swap this team'}">
-            🔄 Swap
-          </button>
-          <button class="clear-btn" onclick="clearTeam('${team.name}')" title="Clear results">✕</button>
-        </div>`;
-      }).join('')}
+      ${teamsHtml}
     </div>`;
   }).join('');
 }
 
-function addResult(teamName, sel){
-  const val=sel.value; if(!val) return;
-  if(!S.matches[teamName]) S.matches[teamName]={results:[],stage:'Group',cost:0};
-  S.matches[teamName].results.push(val);
-  sel.value='';
+function saveMatchResult(id) {
+  const hEl = document.getElementById('hs_'+id);
+  const aEl = document.getElementById('as_'+id);
+  if(!hEl || !aEl) return;
+  const h = parseInt(hEl.value);
+  const a = parseInt(aEl.value);
+  if(isNaN(h) || isNaN(a)) { toast('Enter both scores first','err'); return; }
+  if(!S.matchResults) S.matchResults = {};
+  S.matchResults[id] = {home: h, away: a};
   save();
   renderMatches();
   if(document.getElementById('tab-scoreboard').classList.contains('active')) renderScoreboard();
-  toast(`${val} recorded for ${teamName}`,'ok');
+  toast('Result saved ✓','ok');
 }
 
-function setStage(teamName, stage){
-  if(!S.matches[teamName]) S.matches[teamName]={results:[],stage:'Group',cost:0};
-  S.matches[teamName].stage=stage;
+function editMatchResult(id, teamName, opponent, isHome) {
+  if(!S.matchResults) S.matchResults = {};
+  const old = S.matchResults[id] || {};
+  const existingH = old.home != null ? old.home : '';
+  const existingA = old.away != null ? old.away : '';
+  const newScore = prompt(`Edit score (${teamName} vs ${opponent}):\nEnter as "home-away" e.g. 2-1`, `${existingH}-${existingA}`);
+  if(!newScore) return;
+  const parts = newScore.split('-').map(s=>parseInt(s.trim()));
+  if(parts.length !== 2 || parts.some(isNaN)) { toast('Invalid format — use e.g. 2-1','err'); return; }
+  S.matchResults[id] = {home: parts[0], away: parts[1]};
   save();
+  renderMatches();
   if(document.getElementById('tab-scoreboard').classList.contains('active')) renderScoreboard();
+  toast('Result updated ✓','ok');
 }
 
 function setCost(teamName, val){
   if(!S.matches[teamName]) S.matches[teamName]={results:[],stage:'Group',cost:0};
   S.matches[teamName].cost=parseInt(val)||0;
   save();
-  if(document.getElementById('tab-scoreboard').classList.contains('active')) renderScoreboard();
-}
-
-function clearTeam(teamName){
-  S.matches[teamName]={results:[],stage:'Group',cost:0};
-  save(); renderMatches();
   if(document.getElementById('tab-scoreboard').classList.contains('active')) renderScoreboard();
 }
 
@@ -1281,6 +1399,51 @@ function friendlyDate(dateStr) {
   return dt.toLocaleDateString('en-GB', {weekday:'long', day:'numeric', month:'long'});
 }
 
+function subscribeGCal() {
+  // Use hosted schedule.ics on the same origin (GitHub Pages)
+  const icsUrl = window.location.origin + window.location.pathname.replace(/\/[^/]*$/, '/') + 'schedule.ics';
+  const gcalUrl = 'https://calendar.google.com/calendar/r?cid=' + encodeURIComponent(icsUrl);
+  window.open(gcalUrl, '_blank');
+}
+
+function downloadICS() {
+  // Build ICS client-side from SCHEDULE data (times stored as BST = UTC+1)
+  function pad(n){ return String(n).padStart(2,'0'); }
+  function bstToUTCStr(d, t) {
+    const [yr,mo,dy] = d.split('-').map(Number);
+    const [h, m] = t.split(':').map(Number);
+    const dt = new Date(Date.UTC(yr, mo-1, dy, h-1, m)); // subtract 1h BST→UTC
+    return `${dt.getUTCFullYear()}${pad(dt.getUTCMonth()+1)}${pad(dt.getUTCDate())}T${pad(dt.getUTCHours())}${pad(dt.getUTCMinutes())}00Z`;
+  }
+  const lines = [
+    'BEGIN:VCALENDAR','VERSION:2.0',
+    'PRODID:-//FIFA 2026 Dream Team//EN',
+    'X-WR-CALNAME:FIFA 2026 World Cup',
+    'CALSCALE:GREGORIAN','METHOD:PUBLISH',
+  ];
+  SCHEDULE.forEach((m, i) => {
+    const start = bstToUTCStr(m.d, m.t);
+    // Add 2h for end time
+    const [yr,mo,dy] = m.d.split('-').map(Number);
+    const [h, min] = m.t.split(':').map(Number);
+    const dtEnd = new Date(Date.UTC(yr, mo-1, dy, h-1+2, min));
+    const end = `${dtEnd.getUTCFullYear()}${pad(dtEnd.getUTCMonth()+1)}${pad(dtEnd.getUTCDate())}T${pad(dtEnd.getUTCHours())}${pad(dtEnd.getUTCMinutes())}00Z`;
+    lines.push('BEGIN:VEVENT',
+      `UID:fifa2026-${i+1}@dreamteam`,
+      `DTSTART:${start}`,`DTEND:${end}`,
+      `SUMMARY:${m.home} vs ${m.away}`,
+      `LOCATION:${m.venue}`,
+      `DESCRIPTION:${m.stage} - FIFA World Cup 2026`,
+      'END:VEVENT');
+  });
+  lines.push('END:VCALENDAR');
+  const blob = new Blob([lines.join('\r\n')], {type:'text/calendar'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'fifa2026.ics';
+  a.click();
+}
+
 function renderSchedule() {
   const el = document.getElementById('schedule-content');
   if (!el) return;
@@ -1301,12 +1464,27 @@ function renderSchedule() {
     return t ? t.flag : '';
   }
 
-  function bstToIST(t) {
-    const [h, m] = t.split(':').map(Number);
-    let mins = h * 60 + m + 4 * 60 + 30; // BST+4h30 = IST
-    if (mins >= 24 * 60) mins -= 24 * 60;
-    return String(Math.floor(mins / 60)).padStart(2,'0') + ':' + String(mins % 60).padStart(2,'0');
+  // Convert BST date+time to IST — returns {date, time, nextDay}
+  function toIST(bstDate, bstTime) {
+    const [h, m] = bstTime.split(':').map(Number);
+    let mins = h * 60 + m + 4 * 60 + 30; // BST → IST (+4h30)
+    const nextDay = mins >= 24 * 60;
+    if (nextDay) mins -= 24 * 60;
+    const time = String(Math.floor(mins / 60)).padStart(2,'0') + ':' + String(mins % 60).padStart(2,'0');
+    let date = bstDate;
+    if (nextDay) {
+      const d = new Date(bstDate + 'T00:00:00');
+      d.setDate(d.getDate() + 1);
+      date = d.toISOString().slice(0,10);
+    }
+    return { date, time };
   }
+
+  // Build IST-adjusted schedule for grouping
+  const SCHEDULE_IST = SCHEDULE.map(m => {
+    const ist = toIST(m.d, m.t);
+    return { ...m, istDate: ist.date, istTime: ist.time };
+  });
 
   function matchRow(m) {
     const hOwner = owned[m.home];
@@ -1317,7 +1495,7 @@ function renderSchedule() {
     return `<div class="sched-match ${highlighted?'owned':''}">
       <div class="sched-home">${teamFlag(m.home)} <span>${m.home}</span>${hBadge}</div>
       <div class="sched-mid">
-        <span class="sched-time">${bstToIST(m.t)}<small style="font-size:9px;color:var(--muted)"> IST</small></span>
+        <span class="sched-time">${m.istTime}<small style="font-size:9px;color:var(--muted)"> IST</small></span>
         <span class="sched-vs">vs</span>
         <span style="font-size:9px;color:var(--muted);text-align:center">${m.venue}</span>
       </div>
@@ -1337,13 +1515,23 @@ function renderSchedule() {
     </div>`;
   }
 
+  const calBtns = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+    <button onclick="subscribeGCal()" style="display:flex;align-items:center;gap:6px;padding:7px 13px;border-radius:8px;border:1px solid #4285f4;background:#4285f433;color:#4285f4;font-size:12px;font-weight:600;cursor:pointer">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V10h14v10zM5 8V6h14v2H5z"/></svg>
+      Subscribe (Google Calendar)
+    </button>
+    <button onclick="downloadICS()" style="display:flex;align-items:center;gap:6px;padding:7px 13px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:12px;font-weight:600;cursor:pointer">
+      ⬇️ Download .ics
+    </button>
+  </div>`;
+
   const viewBtns = `<div class="sched-view-btns">
     <button class="sched-vbtn ${schedView==='upcoming'?'active':''}" onclick="setSchedView('upcoming',this)">⚡ Today & Tomorrow</button>
     <button class="sched-vbtn ${schedView==='all'?'active':''}" onclick="setSchedView('all',this)">📅 Full Schedule</button>
   </div>`;
 
   if (schedView === 'upcoming') {
-    let html = '';
+    let html = calBtns;
 
     if (todayStr < kickoffDate) {
       // Pre-tournament countdown
@@ -1358,7 +1546,7 @@ function renderSchedule() {
       // Show next 2 days of matches as a preview
       const preview = ['2026-06-11','2026-06-12','2026-06-13'];
       preview.forEach(d => {
-        const ms = SCHEDULE.filter(m => m.d === d);
+        const ms = SCHEDULE_IST.filter(m => m.istDate === d);
         if (ms.length) {
           const lbl = d==='2026-06-11' ? '🎉 Opening Day — June 11' : friendlyDate(d);
           html += dayBlock(d, ms, d==='2026-06-11'?'today-hdr':'tomorrow-hdr', lbl);
@@ -1369,8 +1557,8 @@ function renderSchedule() {
       html += `<div class="no-match-day">🏆 FIFA World Cup 2026 is complete. What a tournament!</div>`;
     } else {
       html += viewBtns;
-      const todayMs = SCHEDULE.filter(m => m.d === todayStr);
-      const tomorrowMs = SCHEDULE.filter(m => m.d === tomorrowStr);
+      const todayMs = SCHEDULE_IST.filter(m => m.istDate === todayStr);
+      const tomorrowMs = SCHEDULE_IST.filter(m => m.istDate === tomorrowStr);
 
       if (todayMs.length) {
         html += dayBlock(todayStr, todayMs, 'today-hdr', '📍 Today — ' + friendlyDate(todayStr));
@@ -1381,10 +1569,10 @@ function renderSchedule() {
         html += dayBlock(tomorrowStr, tomorrowMs, 'tomorrow-hdr', '⏭ Tomorrow — ' + friendlyDate(tomorrowStr));
       } else {
         // Find next match day
-        const nextDay = SCHEDULE.find(m => m.d > tomorrowStr);
+        const nextDay = SCHEDULE_IST.find(m => m.istDate > tomorrowStr);
         if (nextDay) {
-          const nextMs = SCHEDULE.filter(m => m.d === nextDay.d);
-          html += dayBlock(nextDay.d, nextMs, 'tomorrow-hdr', '📅 Next matches — ' + friendlyDate(nextDay.d));
+          const nextMs = SCHEDULE_IST.filter(m => m.istDate === nextDay.istDate);
+          html += dayBlock(nextDay.istDate, nextMs, 'tomorrow-hdr', '📅 Next matches — ' + friendlyDate(nextDay.istDate));
         } else {
           html += `<div class="no-match-day">No upcoming matches scheduled</div>`;
         }
@@ -1392,9 +1580,10 @@ function renderSchedule() {
     }
     el.innerHTML = html;
   } else {
-    // Full schedule view
+    // Full schedule view — grouped by IST date
+    let html = calBtns + viewBtns;
     const grouped = {};
-    SCHEDULE.forEach(m => { if(!grouped[m.d]) grouped[m.d]=[]; grouped[m.d].push(m); });
+    SCHEDULE_IST.forEach(m => { if(!grouped[m.istDate]) grouped[m.istDate]=[]; grouped[m.istDate].push(m); });
 
     let html = viewBtns;
     let lastStage = '';
@@ -1492,9 +1681,10 @@ function updateCountdown(){
       // Merge remote state
       S = data;
       // Firebase silently drops empty arrays/objects — restore before touching any field
-      if (!S.picks)     S.picks     = {};
-      if (!S.matches)   S.matches   = {};
-      if (!S.changes)   S.changes   = {};
+      if (!S.picks)        S.picks        = {};
+      if (!S.matches)      S.matches      = {};
+      if (!S.matchResults) S.matchResults = {};
+      if (!S.changes)      S.changes      = {};
       if (!S.changeLog) S.changeLog = {};
       // Normalise playerOrder — Firebase can return arrays as {0:'x',1:'y'...} objects
       S.playerOrder = toArray(S.playerOrder) || ['Namimoto','Adbrahm','Abu','Zdawg'];
