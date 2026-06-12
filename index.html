@@ -299,8 +299,9 @@
 
 <!-- ===== MATCHES TAB ===== -->
 <div id="tab-matches" class="tab-content">
-  <div class="info-box">
-    ⚽ Completed matches appear automatically. Any player can enter the score once — it syncs to everyone. Points and stage bonuses calculate automatically.
+  <div class="info-box" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+    <span>⚽ Results are fetched automatically from ESPN. Points and stage bonuses calculate automatically.</span>
+    <button onclick="fetchMatchResults()" style="padding:5px 12px;border-radius:8px;border:none;background:var(--navy);color:white;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">🔄 Refresh</button>
   </div>
   <div id="match-list"></div>
 </div>
@@ -629,6 +630,81 @@ function playerScore(p) {
     cost += (getMatch(t.name).cost || 0);
   }
   return {matchPts, stageBonus, cost, total: matchPts+stageBonus+cost};
+}
+
+// ============================================================
+// AUTO MATCH RESULT FETCHING (ESPN unofficial API)
+// ============================================================
+const ESPN_NAME_MAP = {
+  'Czech Republic':'Czech Rep', 'Czechia':'Czech Rep',
+  'Bosnia and Herzegovina':'Bosnia & Hz', 'Bosnia & Herzegovina':'Bosnia & Hz',
+  "Côte d'Ivoire":'Ivory Coast', 'Cote d\'Ivoire':'Ivory Coast',
+  'Curacao':'Curaçao', 'DR Congo':'DR Congo',
+  'Republic of Ireland':'Ireland', 'Korea Republic':'South Korea',
+  'IR Iran':'Iran', 'New Zealand':'New Zealand',
+};
+function espnName(n){ return ESPN_NAME_MAP[n] || n; }
+
+let _fetchingResults = false;
+async function fetchMatchResults(silent=false) {
+  if (_fetchingResults) return;
+  _fetchingResults = true;
+  if (!S.matchResults) S.matchResults = {};
+
+  // Collect unique dates that have completed matches we don't yet have results for
+  const missingDates = [...new Set(
+    SCHEDULE.filter(m => isMatchComplete(m) && !S.matchResults[mkId(m)])
+           .map(m => m.d)
+  )];
+  if (!missingDates.length) { _fetchingResults = false; return; }
+
+  let anyNew = false;
+  for (const date of missingDates) {
+    const dateStr = date.replace(/-/g,'');
+    try {
+      const resp = await fetch(
+        `https://site.api.espn.com/apis/site/v2/sports/soccer/FIFA.World/scoreboard?dates=${dateStr}`,
+        {signal: AbortSignal.timeout(8000)}
+      );
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      for (const event of (data.events || [])) {
+        const comp = (event.competitions || [])[0];
+        if (!comp?.status?.type?.completed) continue;
+        const home = comp.competitors?.find(c=>c.homeAway==='home');
+        const away = comp.competitors?.find(c=>c.homeAway==='away');
+        if (!home || !away) continue;
+        const hn = espnName(home.team?.displayName||'');
+        const an = espnName(away.team?.displayName||'');
+        const hs = parseInt(home.score);
+        const as_ = parseInt(away.score);
+        if (isNaN(hs) || isNaN(as_)) continue;
+        // Find our matching SCHEDULE entry
+        const sm = SCHEDULE.find(m => m.d === date && (
+          (espnName(m.home)===hn && espnName(m.away)===an) ||
+          (espnName(m.home)===an && espnName(m.away)===hn)
+        ));
+        if (!sm) continue;
+        const id = mkId(sm);
+        // Store scores aligned to our home/away order
+        const aligned = espnName(sm.home)===hn
+          ? {home:hs, away:as_} : {home:as_, away:hs};
+        if (!S.matchResults[id] ||
+            S.matchResults[id].home !== aligned.home ||
+            S.matchResults[id].away !== aligned.away) {
+          S.matchResults[id] = aligned;
+          anyNew = true;
+        }
+      }
+    } catch(e) { console.warn('ESPN fetch error for', date, e.message); }
+  }
+  _fetchingResults = false;
+  if (anyNew) {
+    save();
+    if (document.getElementById('tab-matches').classList.contains('active')) renderMatches();
+    if (document.getElementById('tab-scoreboard').classList.contains('active')) renderScoreboard();
+    if (!silent) toast('⚽ Match results updated','ok');
+  }
 }
 
 // ============================================================
@@ -1005,20 +1081,13 @@ function renderMatches(){
             <span class="auto-match-outcome" style="background:${outcomeColor}">${outcome}</span>
             <span class="auto-match-pts">+${pts}</span>
             <span class="auto-match-meta">${istDate} ${istTime} IST</span>
-            <button class="auto-edit-btn" onclick="editMatchResult('${id}','${team.name.replace(/'/g,"\\'")}','${opponent.replace(/'/g,"\\'")}',${isHome})" title="Edit result">✏️</button>
           </div>`;
         } else {
-          // Completed but no result entered yet
+          // Completed but result not yet fetched
           return `<div class="auto-match-row pending">
             <span class="auto-match-stage">${stageLabel}</span>
             <span class="auto-match-teams">${team.flag} ${team.name} <span style="color:var(--muted);font-size:10px">${isHome?'vs':'@'}</span> ${oppFlag} ${opponent}</span>
-            <span style="display:flex;align-items:center;gap:4px">
-              <input type="number" min="0" max="20" placeholder="0" style="width:36px;padding:2px 4px;border-radius:4px;border:1px solid var(--border);text-align:center;font-size:12px" id="hs_${id}">
-              <span style="color:var(--muted)">–</span>
-              <input type="number" min="0" max="20" placeholder="0" style="width:36px;padding:2px 4px;border-radius:4px;border:1px solid var(--border);text-align:center;font-size:12px" id="as_${id}">
-              <button onclick="saveMatchResult('${id}')" style="padding:2px 8px;border-radius:4px;border:none;background:#3498db;color:white;font-size:11px;cursor:pointer">Save</button>
-            </span>
-            <span style="color:var(--muted);font-size:10px;font-style:italic">awaiting result</span>
+            <span style="color:var(--muted);font-size:11px;font-style:italic">⏳ Fetching result…</span>
             <span class="auto-match-meta">${istDate} ${istTime} IST</span>
           </div>`;
         }
@@ -1052,36 +1121,6 @@ function renderMatches(){
   }).join('');
 }
 
-function saveMatchResult(id) {
-  const hEl = document.getElementById('hs_'+id);
-  const aEl = document.getElementById('as_'+id);
-  if(!hEl || !aEl) return;
-  const h = parseInt(hEl.value);
-  const a = parseInt(aEl.value);
-  if(isNaN(h) || isNaN(a)) { toast('Enter both scores first','err'); return; }
-  if(!S.matchResults) S.matchResults = {};
-  S.matchResults[id] = {home: h, away: a};
-  save();
-  renderMatches();
-  if(document.getElementById('tab-scoreboard').classList.contains('active')) renderScoreboard();
-  toast('Result saved ✓','ok');
-}
-
-function editMatchResult(id, teamName, opponent, isHome) {
-  if(!S.matchResults) S.matchResults = {};
-  const old = S.matchResults[id] || {};
-  const existingH = old.home != null ? old.home : '';
-  const existingA = old.away != null ? old.away : '';
-  const newScore = prompt(`Edit score (${teamName} vs ${opponent}):\nEnter as "home-away" e.g. 2-1`, `${existingH}-${existingA}`);
-  if(!newScore) return;
-  const parts = newScore.split('-').map(s=>parseInt(s.trim()));
-  if(parts.length !== 2 || parts.some(isNaN)) { toast('Invalid format — use e.g. 2-1','err'); return; }
-  S.matchResults[id] = {home: parts[0], away: parts[1]};
-  save();
-  renderMatches();
-  if(document.getElementById('tab-scoreboard').classList.contains('active')) renderScoreboard();
-  toast('Result updated ✓','ok');
-}
 
 function setCost(teamName, val){
   if(!S.matches[teamName]) S.matches[teamName]={results:[],stage:'Group',cost:0};
@@ -1742,6 +1781,9 @@ updateCountdown();
 setInterval(updateCountdown, 30000);
 renderAll();
 renderSchedule();
+// Auto-fetch match results on load, then every 5 minutes
+fetchMatchResults(true);
+setInterval(() => fetchMatchResults(true), 5 * 60 * 1000);
 
 // Restore identity chip state
 (function initIdentity(){
