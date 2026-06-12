@@ -288,7 +288,7 @@
       <thead>
         <tr>
           <th>Player</th><th>Team</th><th>Grp</th><th>Stage Reached</th>
-          <th>W</th><th>D</th><th>L</th>
+          <th>P</th><th>W</th><th>D</th><th>L</th>
           <th>Match Pts</th><th>Stage Bonus</th><th>Cost</th><th>TOTAL</th>
         </tr>
       </thead>
@@ -1088,19 +1088,24 @@ function renderScoreboard(){
     const color = P_COLORS[p];
     if(picks.length===0){
       const r=document.createElement('tr');
-      r.innerHTML=`<td style="font-weight:800;color:${color};border-left:3px solid ${color}">${p}</td><td colspan="10" style="color:#bbb;font-style:italic">No picks yet — complete the draft first.</td>`;
+      r.innerHTML=`<td style="font-weight:800;color:${color};border-left:3px solid ${color}">${p}</td><td colspan="11" style="color:#bbb;font-style:italic">No picks yet — complete the draft first.</td>`;
       tbody.appendChild(r); continue;
     }
     picks.forEach((team,i)=>{
-      const m=getMatch(team.name);
-      const results=m.results||[];
-      const W=results.filter(r=>r==='Win').length;
-      const D=results.filter(r=>r==='Draw').length;
-      const L=results.filter(r=>r==='Lose').length;
-      const mp=results.reduce((s,r)=>s+(RESULT_PTS[r]||0),0);
-      const stage=m.stage||'Group';
+      // Compute W/D/L from ESPN results in S.matchResults
+      const teamSchedule = SCHEDULE.filter(m => m.home===team.name||m.away===team.name);
+      let W=0,D=0,L=0,mp=0;
+      teamSchedule.forEach(m=>{
+        const scores = S.matchResults && S.matchResults[mkId(m)];
+        const outcome = teamOutcome(team.name, m, scores);
+        if(outcome==='Win'){W++;mp+=RESULT_PTS.Win||0;}
+        else if(outcome==='Draw'){D++;mp+=RESULT_PTS.Draw||0;}
+        else if(outcome==='Lose'){L++;mp+=RESULT_PTS.Lose||0;}
+      });
+      const P=W+D+L;
+      const stage = teamHighestStage(team.name);
       const sb=STAGE_BONUS[stage]||0;
-      const cost=m.cost||0;
+      const cost=(getMatch(team.name).cost)||0;
       const rowTotal=mp+sb+cost;
       const r=document.createElement('tr');
       let playerCell='';
@@ -1109,6 +1114,7 @@ function renderScoreboard(){
         <td>${team.flag} ${team.name}</td>
         <td><span class="stage-pill">Grp ${team.group}</span></td>
         <td><span class="stage-pill" style="background:${sb>0?'#d4edda':'#f8f9fa'};color:${sb>0?'#155724':'#666'}">${stage}</span></td>
+        <td style="font-weight:700">${P}</td>
         <td style="color:#27ae60;font-weight:700">${W}</td>
         <td style="color:#f39c12;font-weight:700">${D}</td>
         <td style="color:#e74c3c;font-weight:700">${L}</td>
@@ -1121,7 +1127,7 @@ function renderScoreboard(){
     // Player total row
     const totalRow=document.createElement('tr');
     totalRow.style.background=color+'0a';
-    totalRow.innerHTML=`<td colspan="7" style="font-weight:800;color:${color};font-size:12px;padding-left:14px">↳ ${p} TOTAL</td><td colspan="4" style="font-weight:900;color:${color};font-size:15px">${total}</td>`;
+    totalRow.innerHTML=`<td colspan="8" style="font-weight:800;color:${color};font-size:12px;padding-left:14px">↳ ${p} TOTAL</td><td colspan="4" style="font-weight:900;color:${color};font-size:15px">${total}</td>`;
     tbody.appendChild(totalRow);
   }
 }
