@@ -1584,8 +1584,6 @@ function renderSchedule() {
     let html = calBtns + viewBtns;
     const grouped = {};
     SCHEDULE_IST.forEach(m => { if(!grouped[m.istDate]) grouped[m.istDate]=[]; grouped[m.istDate].push(m); });
-
-    let html = viewBtns;
     let lastStage = '';
     Object.keys(grouped).sort().forEach(dateStr => {
       const ms = grouped[dateStr];
