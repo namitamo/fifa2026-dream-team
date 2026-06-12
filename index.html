@@ -172,6 +172,8 @@
     .sched-match{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:6px;padding:10px 13px;background:white;border-bottom:1px solid #f0f0f0}
     .sched-match:last-child{border-bottom:none}
     .sched-match.owned{background:#fffbeb}
+    .sched-match.past{opacity:.72}
+    .sched-match.past .sched-home span,.sched-match.past .sched-away span{color:var(--muted)}
     .sched-home{font-size:12px;font-weight:600;display:flex;align-items:center;gap:4px}
     .sched-away{font-size:12px;font-weight:600;display:flex;align-items:center;gap:4px;justify-content:flex-end;text-align:right}
     .sched-mid{display:flex;flex-direction:column;align-items:center;gap:2px;min-width:70px}
@@ -768,6 +770,7 @@ async function fetchMatchResults(silent=false) {
       save();
       if (document.getElementById('tab-matches').classList.contains('active')) renderMatches();
       if (document.getElementById('tab-scoreboard').classList.contains('active')) renderScoreboard();
+      if (document.getElementById('tab-schedule').classList.contains('active')) renderSchedule();
       if (!silent) toast('⚽ Match results updated','ok');
     } else if (!silent) {
       if (totalFetchErrors > 0)
@@ -1651,13 +1654,33 @@ function renderSchedule() {
     const highlighted = hOwner || aOwner;
     const hBadge = hOwner ? `<span class="own-badge" style="background:${P_COLORS[hOwner]}">${hOwner.slice(0,3).toUpperCase()}</span>` : '';
     const aBadge = aOwner ? `<span class="own-badge" style="background:${P_COLORS[aOwner]}">${aOwner.slice(0,3).toUpperCase()}</span>` : '';
-    return `<div class="sched-match ${highlighted?'owned':''}">
-      <div class="sched-home">${teamFlag(m.home)} <span>${m.home}</span>${hBadge}</div>
-      <div class="sched-mid">
+
+    const scores = S.matchResults && S.matchResults[mkId(m)];
+    const complete = isMatchComplete(m);
+    let midContent;
+    if (scores && scores.home != null) {
+      // Show final score
+      midContent = `
+        <span style="font-size:10px;color:var(--muted);letter-spacing:.3px">FT</span>
+        <span style="font-size:16px;font-weight:900;color:var(--navy);letter-spacing:1px">${scores.home} – ${scores.away}</span>
+        <span style="font-size:9px;color:var(--muted);text-align:center">${m.venue}</span>`;
+    } else if (complete) {
+      // Finished but result not fetched yet
+      midContent = `
+        <span style="font-size:10px;color:var(--muted)">FT</span>
+        <span style="font-size:12px;color:var(--muted);font-style:italic">? – ?</span>
+        <span style="font-size:9px;color:var(--muted);text-align:center">${m.venue}</span>`;
+    } else {
+      // Upcoming
+      midContent = `
         <span class="sched-time">${m.istTime}<small style="font-size:9px;color:var(--muted)"> IST</small></span>
         <span class="sched-vs">vs</span>
-        <span style="font-size:9px;color:var(--muted);text-align:center">${m.venue}</span>
-      </div>
+        <span style="font-size:9px;color:var(--muted);text-align:center">${m.venue}</span>`;
+    }
+
+    return `<div class="sched-match ${highlighted?'owned':''} ${complete?'past':''}">
+      <div class="sched-home">${teamFlag(m.home)} <span>${m.home}</span>${hBadge}</div>
+      <div class="sched-mid">${midContent}</div>
       <div class="sched-away">${aBadge}<span>${m.away}</span> ${teamFlag(m.away)}</div>
     </div>`;
   }
