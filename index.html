@@ -643,12 +643,37 @@ function playerScore(p) {
 // AUTO MATCH RESULT FETCHING (ESPN unofficial API)
 // ============================================================
 const ESPN_NAME_MAP = {
+  // USA
+  'United States':'USA', 'United States of America':'USA',
+  // Czech Republic
   'Czech Republic':'Czech Rep', 'Czechia':'Czech Rep',
+  // Bosnia & Herzegovina
   'Bosnia and Herzegovina':'Bosnia & Hz', 'Bosnia & Herzegovina':'Bosnia & Hz',
-  "Côte d'Ivoire":'Ivory Coast', 'Cote d\'Ivoire':'Ivory Coast',
-  'Curacao':'Curaçao', 'DR Congo':'DR Congo',
-  'Republic of Ireland':'Ireland', 'Korea Republic':'South Korea',
-  'IR Iran':'Iran', 'New Zealand':'New Zealand',
+  'Bosnia-Herzegovina':'Bosnia & Hz', 'Bosnia Herzegovina':'Bosnia & Hz',
+  // Ivory Coast
+  "Côte d'Ivoire":'Ivory Coast', "Cote d'Ivoire":'Ivory Coast',
+  "Côte D'Ivoire":'Ivory Coast', "Cote D'Ivoire":'Ivory Coast',
+  "Ivory Coast":'Ivory Coast',
+  // Turkey (FIFA rebranded to Türkiye in 2022)
+  'Türkiye':'Turkey', 'Turkiye':'Turkey',
+  // Cape Verde (FIFA uses Cabo Verde)
+  'Cabo Verde':'Cape Verde', 'Cape Verde Islands':'Cape Verde',
+  // DR Congo
+  'Congo DR':'DR Congo', 'Congo, DR':'DR Congo',
+  'Democratic Republic of Congo':'DR Congo',
+  'Democratic Republic of the Congo':'DR Congo',
+  // South Korea
+  'Korea Republic':'South Korea', 'Republic of Korea':'South Korea',
+  // Iran
+  'IR Iran':'Iran', 'Islamic Republic of Iran':'Iran',
+  // Curaçao
+  'Curacao':'Curaçao',
+  // New Zealand
+  'New Zealand':'New Zealand',
+  // Netherlands (sometimes listed as Holland)
+  'Holland':'Netherlands',
+  // Saudi Arabia
+  'KSA':'Saudi Arabia',
 };
 function espnName(n){ return ESPN_NAME_MAP[n] || n; }
 
@@ -706,10 +731,14 @@ async function fetchMatchResults(silent=false) {
             const hs = parseInt(home.score);
             const as_ = parseInt(away.score);
             if (isNaN(hs)||isNaN(as_)) continue;
-            const sm = SCHEDULE.find(m => m.d === date && (
-              (espnName(m.home)===hn && espnName(m.away)===an) ||
-              (espnName(m.home)===an && espnName(m.away)===hn)
-            ));
+            // Allow ±1 day: ESPN uses US ET dates, our schedule uses BST
+            const sm = SCHEDULE.find(m => {
+              const diffMs = Math.abs(new Date(m.d) - new Date(date));
+              return diffMs <= 86400000 && (
+                (espnName(m.home)===hn && espnName(m.away)===an) ||
+                (espnName(m.home)===an && espnName(m.away)===hn)
+              );
+            });
             if (!sm) { console.log(`ESPN: no SCHEDULE match for ${hn} vs ${an} on ${date}`); continue; }
             const id = mkId(sm);
             const aligned = espnName(sm.home)===hn ? {home:hs, away:as_} : {home:as_, away:hs};
@@ -752,8 +781,8 @@ async function espnDebug(targetDate) {
   const out = document.getElementById('espn-debug-out');
   if (dbg) dbg.style.display = 'block';
   const lines = [];
-  // Try all completed-match dates if no specific date given
-  const dates = targetDate ? [targetDate] : [...new Set(SCHEDULE.filter(m=>isMatchComplete(m)).map(m=>m.d))].slice(0,3);
+  // Try all completed-match dates if no specific date given (deduplicated, most recent first)
+  const dates = targetDate ? [targetDate] : [...new Set(SCHEDULE.filter(m=>isMatchComplete(m)).map(m=>m.d))].slice(-3);
   for (const date of dates) {
     const isoDate = date.replace(/-/g,'');
     lines.push(`\n📅 Date: ${date}`);
