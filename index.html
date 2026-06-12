@@ -301,7 +301,14 @@
 <div id="tab-matches" class="tab-content">
   <div class="info-box" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
     <span>⚽ Results are fetched automatically from ESPN. Points and stage bonuses calculate automatically.</span>
-    <button onclick="fetchMatchResults()" style="padding:5px 12px;border-radius:8px;border:none;background:var(--navy);color:white;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">🔄 Refresh</button>
+    <div style="display:flex;gap:6px">
+      <button onclick="fetchMatchResults()" style="padding:5px 12px;border-radius:8px;border:none;background:var(--navy);color:white;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">🔄 Refresh</button>
+      <button onclick="espnDebug()" style="padding:5px 12px;border-radius:8px;border:1px solid var(--border);background:white;color:var(--muted);font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">🔍 Debug</button>
+    </div>
+  </div>
+  <div id="espn-debug" style="display:none;background:#1a202c;color:#a0f0a0;border-radius:8px;padding:12px;margin-bottom:12px;font-size:11px;font-family:monospace;white-space:pre-wrap">
+    <div style="color:#94a3b8;margin-bottom:6px;font-family:sans-serif;font-size:11px">ESPN Debug Output — hit 🔍 Debug to run</div>
+    <div id="espn-debug-out">…</div>
   </div>
   <div id="match-list"></div>
 </div>
@@ -687,7 +694,10 @@ async function fetchMatchResults(silent=false) {
           gotEvents = true;
           for (const event of events) {
             const comp = (event.competitions || [])[0];
-            if (!comp?.status?.type?.completed) continue;
+            const isFinished = comp?.status?.type?.completed === true
+              || comp?.status?.type?.state === 'post'
+              || comp?.status?.type?.name === 'STATUS_FINAL';
+            if (!isFinished) continue;
             const home = comp.competitors?.find(c=>c.homeAway==='home');
             const away = comp.competitors?.find(c=>c.homeAway==='away');
             if (!home || !away) continue;
@@ -726,13 +736,49 @@ async function fetchMatchResults(silent=false) {
       if (!silent) toast('⚽ Match results updated','ok');
     } else if (!silent) {
       if (totalFetchErrors > 0)
-        toast('⚠️ ESPN fetch failed — open console for details','err');
+        toast('⚠️ ESPN fetch failed — see debug panel','err');
       else
-        toast('No completed results found yet','ok');
+        toast('No new results found — see debug panel','ok');
     }
+    if (!silent) { const d=document.getElementById('espn-debug'); if(d) d.style.display='block'; }
   } finally {
     _fetchingResults = false;
   }
+}
+
+// Debug: fetch raw ESPN response and show it in the page
+async function espnDebug(targetDate) {
+  const dbg = document.getElementById('espn-debug');
+  const out = document.getElementById('espn-debug-out');
+  if (dbg) dbg.style.display = 'block';
+  const lines = [];
+  // Try all completed-match dates if no specific date given
+  const dates = targetDate ? [targetDate] : [...new Set(SCHEDULE.filter(m=>isMatchComplete(m)).map(m=>m.d))].slice(0,3);
+  for (const date of dates) {
+    const isoDate = date.replace(/-/g,'');
+    lines.push(`\n📅 Date: ${date}`);
+    for (const slug of ESPN_SLUGS) {
+      try {
+        const resp = await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/${slug}/scoreboard?dates=${isoDate}`,{signal:AbortSignal.timeout(8000)});
+        if (!resp.ok) { lines.push(`  ${slug}: HTTP ${resp.status}`); continue; }
+        const data = await resp.json();
+        const events = data.events || [];
+        if (!events.length) { lines.push(`  ${slug}: 0 events`); continue; }
+        lines.push(`  ✅ ${slug}: ${events.length} event(s)`);
+        events.forEach(ev => {
+          const comp=(ev.competitions||[])[0];
+          const st = comp?.status?.type || {};
+          const done = (st.completed||st.state==='post'||st.name==='STATUS_FINAL') ? '✅' : '⏳';
+          const h=comp?.competitors?.find(c=>c.homeAway==='home');
+          const a=comp?.competitors?.find(c=>c.homeAway==='away');
+          lines.push(`    ${done} ${h?.team?.displayName} ${h?.score??'?'} – ${a?.score??'?'} ${a?.team?.displayName}`);
+          lines.push(`       status: completed=${st.completed} state=${st.state} name=${st.name}`);
+        });
+        break;
+      } catch(e) { lines.push(`  ${slug}: ERROR ${e.message}`); }
+    }
+  }
+  if (out) out.textContent = (lines.join('\n') || 'No output').trim();
 }
 
 // ============================================================
