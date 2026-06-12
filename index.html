@@ -687,8 +687,14 @@ async function fetchMatchResults(silent=false) {
   try {
     if (!S.matchResults) S.matchResults = {};
 
+    // For each missing match, also request the previous day — ESPN files matches
+    // under US ET dates, which can be 1 day behind our BST-based schedule dates.
     const missingDates = [...new Set(
-      SCHEDULE.filter(m => isMatchComplete(m) && !S.matchResults[mkId(m)]).map(m => m.d)
+      SCHEDULE.filter(m => isMatchComplete(m) && !S.matchResults[mkId(m)]).flatMap(m => {
+        const prev = new Date(m.d + 'T12:00:00Z');
+        prev.setUTCDate(prev.getUTCDate() - 1);
+        return [m.d, prev.toISOString().slice(0, 10)];
+      })
     )];
 
     if (!missingDates.length) {
