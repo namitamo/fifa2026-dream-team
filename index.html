@@ -232,7 +232,7 @@
       <span id="sync-dot" style="width:7px;height:7px;border-radius:50%;background:#94a3b8;display:inline-block"></span>
       <span id="sync-text" style="font-size:11px;color:#94a3b8">Connecting…</span>
     </span>
-    <button class="my-chip" id="my-chip" onclick="showIdentityModal()" title="Change player identity">👤 Who are you?</button>
+    <button class="my-chip" id="my-chip" onclick="showIdentityModal()" title="Tap to change player">👤 Who are you?</button>
   </div>
 </header>
 
@@ -689,13 +689,16 @@ async function fetchMatchResults(silent=false) {
   try {
     if (!S.matchResults) S.matchResults = {};
 
-    // For each missing match, also request the previous day — ESPN files matches
-    // under US ET dates, which can be 1 day behind our BST-based schedule dates.
+    // For each missing match, scan d-3 through d+1 — our schedule dates can be
+    // several days off from ESPN's (ET-based) dates.
     const missingDates = [...new Set(
       SCHEDULE.filter(m => isMatchComplete(m) && !S.matchResults[mkId(m)]).flatMap(m => {
-        const prev = new Date(m.d + 'T12:00:00Z');
-        prev.setUTCDate(prev.getUTCDate() - 1);
-        return [m.d, prev.toISOString().slice(0, 10)];
+        const base = new Date(m.d + 'T12:00:00Z');
+        return [-3,-2,-1,0,1].map(offset => {
+          const d = new Date(base);
+          d.setUTCDate(d.getUTCDate() + offset);
+          return d.toISOString().slice(0,10);
+        });
       })
     )];
 
@@ -739,14 +742,15 @@ async function fetchMatchResults(silent=false) {
             const hs = parseInt(home.score);
             const as_ = parseInt(away.score);
             if (isNaN(hs)||isNaN(as_)) continue;
-            // Allow ±1 day: ESPN uses US ET dates, our schedule uses BST
-            const sm = SCHEDULE.find(m => {
-              const diffMs = Math.abs(new Date(m.d) - new Date(date));
-              return diffMs <= 86400000 && (
+            // Match by team names only — no date constraint, since our schedule
+            // dates can be several days off from ESPN's ET-based dates.
+            // Safe because each pair plays at most once per stage.
+            const sm = SCHEDULE.find(m =>
+              (!S.matchResults[mkId(m)]) && (
                 (espnName(m.home)===hn && espnName(m.away)===an) ||
                 (espnName(m.home)===an && espnName(m.away)===hn)
-              );
-            });
+              )
+            );
             if (!sm) { console.log(`ESPN: no SCHEDULE match for ${hn} vs ${an} on ${date}`); continue; }
             const id = mkId(sm);
             const aligned = espnName(sm.home)===hn ? {home:hs, away:as_} : {home:as_, away:hs};
@@ -1899,8 +1903,17 @@ function updateCountdown(){
       setSyncStatus(false);
     });
 
-    // ── Connection state indicator ──
-    db.ref('.info/connected').on('value', snap => setSyncStatus(!!snap.val()));
+    // ── Connection state indicator (debounced — don't flash offline on brief hiccups) ──
+    let _offlineTimer = null;
+    db.ref('.info/connected').on('value', snap => {
+      if (snap.val()) {
+        clearTimeout(_offlineTimer);
+        setSyncStatus(true);
+      } else {
+        // Only show offline after 5 s of genuine disconnection
+        _offlineTimer = setTimeout(() => setSyncStatus(false), 5000);
+      }
+    });
 
   } catch(e) {
     console.warn('Firebase init failed:', e);
@@ -1928,16 +1941,13 @@ renderSchedule();
 fetchMatchResults(true);
 setInterval(() => fetchMatchResults(true), 5 * 60 * 1000);
 
-// Restore identity chip state
+// Restore identity chip state — auto-use stored name, only prompt if none stored
 (function initIdentity(){
   const chip = document.getElementById('my-chip');
   if(myPlayer){
     chip.textContent = `👤 ${myPlayer}`;
     chip.style.background = P_COLORS[myPlayer]+'55';
-  }
-  // Show identity modal on first ever visit
-  if(!myPlayer && !localStorage.getItem('fifa2026_seen')){
-    localStorage.setItem('fifa2026_seen','1');
+  } else {
     showIdentityModal();
   }
 })();
