@@ -689,22 +689,18 @@ async function fetchMatchResults(silent=false) {
   try {
     if (!S.matchResults) S.matchResults = {};
 
-    // For each missing match, scan d-3 through d+1 — our schedule dates can be
-    // several days off from ESPN's (ET-based) dates.
-    const missingDates = [...new Set(
-      SCHEDULE.filter(m => isMatchComplete(m) && !S.matchResults[mkId(m)]).flatMap(m => {
-        const base = new Date(m.d + 'T12:00:00Z');
-        return [-3,-2,-1,0,1].map(offset => {
-          const d = new Date(base);
-          d.setUTCDate(d.getUTCDate() + offset);
-          return d.toISOString().slice(0,10);
-        });
-      })
-    )];
-
-    if (!missingDates.length) {
-      if (!silent) toast('Results up to date ✓','ok');
+    // Our schedule dates are unreliable (hard-coded, since shifted by FIFA).
+    // Instead of guessing offsets, scan every day from tournament start to today.
+    const unresolvedMatches = SCHEDULE.filter(m => isMatchComplete(m) && !S.matchResults[mkId(m)]);
+    if (!unresolvedMatches.length) {
+      if (!silent) toast('Results up to date ✓', 'ok');
       return;
+    }
+    const scanStart = new Date('2026-06-10T12:00:00Z'); // day before opening in case of ET offset
+    const scanEnd = new Date();
+    const missingDates = [];
+    for (let d = new Date(scanStart); d <= scanEnd; d.setUTCDate(d.getUTCDate() + 1)) {
+      missingDates.push(d.toISOString().slice(0, 10));
     }
 
     if (!silent) toast('Fetching ESPN results…','ok');
@@ -821,6 +817,166 @@ async function espnDebug(targetDate) {
     }
   }
   if (out) out.textContent = (lines.join('\n') || 'No output').trim();
+}
+
+// ============================================================
+// ESPN SCHEDULE SYNC — keep fixture list authoritative
+// ============================================================
+let _espnScheduleBuilding = false;
+
+// Parse ESPN event objects into our SCHEDULE entry format
+function _parseESPNScheduleEvents(events, out) {
+  for (const event of events) {
+    const comp = (event.competitions || [])[0];
+    if (!comp) continue;
+    const h = comp.competitors?.find(c => c.homeAway === 'home');
+    const a = comp.competitors?.find(c => c.homeAway === 'away');
+    if (!h || !a) continue;
+
+    const hn = espnName(h.team?.displayName || '');
+    const an = espnName(a.team?.displayName || '');
+
+    // Only keep matches where both teams are in our TEAMS list
+    if (!TEAMS.find(t => t.name === hn) || !TEAMS.find(t => t.name === an)) continue;
+
+    // ESPN date is UTC — convert to BST (UTC+1) to stay compatible with
+    // isMatchComplete() and toIST() which expect BST-based d/t fields
+    const utcMs = new Date(event.date).getTime();
+    const bst   = new Date(utcMs + 60 * 60 * 1000);
+    const d = bst.toISOString().slice(0, 10);
+    const t = String(bst.getUTCHours()).padStart(2,'0') + ':' + String(bst.getUTCMinutes()).padStart(2,'0');
+
+    // Derive stage from altGameNote ("FIFA World Cup, Group A") or season slug
+    const note       = comp.altGameNote || '';
+    const seasonSlug = (event.season?.slug || '').toLowerCase();
+    const grpM       = note.match(/Group ([A-L])/i);
+    let stage;
+    if (grpM) {
+      stage = 'Group ' + grpM[1].toUpperCase();
+    } else if (seasonSlug.includes('round-of-32') || note.includes('Round of 32')) {
+      stage = 'Round of 32';
+    } else if (seasonSlug.includes('round-of-16') || note.includes('Round of 16')) {
+      stage = 'Round of 16';
+    } else if (seasonSlug.includes('quarter') || note.includes('Quarter')) {
+      stage = 'Quarterfinal';
+    } else if (seasonSlug.includes('semi') || note.includes('Semi')) {
+      stage = 'Semifinal';
+    } else if (seasonSlug === 'final' || (note.toLowerCase().includes('final') && !note.includes('Semi') && !note.includes('Quarter'))) {
+      stage = 'Final 🏆';
+    } else {
+      stage = note.replace('FIFA World Cup, ', '') || 'Group';
+    }
+
+    const venue = comp.venue?.fullName || comp.venue?.address?.city || '';
+    out.push({ d, t, home: hn, away: an, venue, stage });
+  }
+}
+
+async function buildScheduleFromESPN(force=false) {
+  // Use cached copy from Firebase if available (and not forcing a refresh)
+  if (!force && S.espnSchedule && Array.isArray(S.espnSchedule) && S.espnSchedule.length > 60) {
+    SCHEDULE = S.espnSchedule;
+    console.log(`Schedule loaded from Firebase cache: ${SCHEDULE.length} matches`);
+    return;
+  }
+  if (_espnScheduleBuilding) return;
+  _espnScheduleBuilding = true;
+  console.log('Fetching schedule from ESPN…');
+
+  const builtMatches = [];
+  try {
+    // Find a working slug first (quick probe on group-stage range)
+    let workingSlug = null;
+    for (const slug of ESPN_SLUGS) {
+      try {
+        const r = await fetch(
+          `https://site.api.espn.com/apis/site/v2/sports/soccer/${slug}/scoreboard?dates=20260611-20260627&limit=200`,
+          { signal: AbortSignal.timeout(15000) }
+        );
+        if (!r.ok) continue;
+        const d = await r.json();
+        if ((d.events || []).length > 0) { workingSlug = slug; break; }
+      } catch(e) { /* try next slug */ }
+    }
+
+    if (!workingSlug) {
+      console.warn('ESPN schedule: no working slug found — keeping hard-coded schedule');
+      return;
+    }
+
+    // Fetch group stage + knockout stages in two chunks
+    for (const range of ['20260611-20260627', '20260628-20260719']) {
+      try {
+        const r = await fetch(
+          `https://site.api.espn.com/apis/site/v2/sports/soccer/${workingSlug}/scoreboard?dates=${range}&limit=200`,
+          { signal: AbortSignal.timeout(15000) }
+        );
+        if (!r.ok) continue;
+        const data = await r.json();
+        _parseESPNScheduleEvents(data.events || [], builtMatches);
+      } catch(e) {
+        console.warn(`ESPN schedule fetch error (${range}):`, e.message);
+      }
+    }
+  } finally {
+    _espnScheduleBuilding = false;
+  }
+
+  if (builtMatches.length < 60) {
+    console.warn(`ESPN schedule: only ${builtMatches.length} matches returned — keeping hard-coded schedule`);
+    return;
+  }
+
+  // Merge ESPN entries with hard-coded SCHEDULE:
+  //  • For group-stage entries (both teams real): replace with ESPN version (correct dates)
+  //  • For TBD knockout entries (placeholder team names): keep hard-coded
+  //  • Any ESPN knockout entries with real teams not yet in hard-coded: append
+  const HARDCODED = SCHEDULE;
+  const merged    = [];
+  const espnUsed  = new Set();
+
+  for (const hc of HARDCODED) {
+    const hcHomeReal = !!TEAMS.find(t => t.name === hc.home);
+    const hcAwayReal = !!TEAMS.find(t => t.name === hc.away);
+
+    if (hcHomeReal && hcAwayReal) {
+      // Try to find matching ESPN entry (team names either way round)
+      const idx = builtMatches.findIndex((m, i) =>
+        !espnUsed.has(i) && (
+          (m.home === hc.home && m.away === hc.away) ||
+          (m.home === hc.away && m.away === hc.home)
+        )
+      );
+      if (idx >= 0) {
+        espnUsed.add(idx);
+        merged.push(builtMatches[idx]); // ESPN version has correct date/time
+      } else {
+        merged.push(hc); // Not in ESPN yet — keep hard-coded
+      }
+    } else {
+      merged.push(hc); // TBD knockout placeholder — keep hard-coded
+    }
+  }
+
+  // Append any ESPN knockout entries not matched above (newly confirmed matchups)
+  for (let i = 0; i < builtMatches.length; i++) {
+    if (!espnUsed.has(i)) merged.push(builtMatches[i]);
+  }
+
+  SCHEDULE = merged;
+  S.espnSchedule = merged;
+  save();
+
+  // Re-render open tab
+  renderAll();
+  const active = document.querySelector('.tab-content.active');
+  if (active) {
+    const tabId = active.id.replace('tab-', '');
+    if (tabId === 'scoreboard') renderScoreboard();
+    if (tabId === 'matches')    renderMatches();
+    if (tabId === 'schedule')   renderSchedule();
+  }
+  console.log(`Schedule updated from ESPN: ${SCHEDULE.length} total (${builtMatches.length} from ESPN, ${SCHEDULE.length - builtMatches.length} hard-coded TBDs kept)`);
 }
 
 // ============================================================
@@ -1430,8 +1586,9 @@ function importState(evt){
 
 // ============================================================
 // SCHEDULE DATA — all times UK (BST = UTC+1)
+// Replaced at runtime by buildScheduleFromESPN() when data is available
 // ============================================================
-const SCHEDULE = [
+let SCHEDULE = [
   // ── ROUND 1 (June 11–18) ─────────────────────────────────
   {d:'2026-06-11',t:'20:00',home:'Mexico',      away:'South Africa', venue:'Mexico City',    stage:'Group A'},
   {d:'2026-06-12',t:'03:00',home:'South Korea', away:'Czech Rep',   venue:'Los Angeles',    stage:'Group A'},
@@ -1872,6 +2029,13 @@ function updateCountdown(){
       if (!S.changeLog) S.changeLog = {};
       // Normalise playerOrder — Firebase can return arrays as {0:'x',1:'y'...} objects
       S.playerOrder = toArray(S.playerOrder) || ['Namimoto','Adbrahm','Abu','Zdawg'];
+      // Normalise ESPN schedule cache — Firebase stores arrays as {0:{…},1:{…}…} objects
+      if (S.espnSchedule) {
+        S.espnSchedule = toArray(S.espnSchedule);
+        if (Array.isArray(S.espnSchedule) && S.espnSchedule.length > 60) {
+          SCHEDULE = S.espnSchedule;
+        }
+      }
       PLAYERS.forEach(p => {
         if (!S.picks[p])     S.picks[p]     = [];
         if (!S.changes[p])   S.changes[p]   = 0;
@@ -1937,9 +2101,11 @@ updateCountdown();
 setInterval(updateCountdown, 30000);
 renderAll();
 renderSchedule();
-// Auto-fetch match results on load, then every 5 minutes
-fetchMatchResults(true);
+// Build schedule from ESPN (replaces hard-coded fixture dates), then refresh match results
+buildScheduleFromESPN().then(() => fetchMatchResults(true));
 setInterval(() => fetchMatchResults(true), 5 * 60 * 1000);
+// Refresh ESPN schedule 3× per day (picks up newly confirmed knockout matchups)
+setInterval(() => buildScheduleFromESPN(true), 8 * 60 * 60 * 1000);
 
 // Restore identity chip state — auto-use stored name, only prompt if none stored
 (function initIdentity(){
