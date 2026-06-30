@@ -507,9 +507,15 @@ function isMatchComplete(m) {
   const kickoffUTC = Date.UTC(yr,mo-1,dy,h-1,min);
   return Date.now() > kickoffUTC + 105*60*1000;
 }
-// W/D/L from a specific team's perspective given stored scores {home,away}
+// W/D/L from a specific team's perspective given stored scores {home,away,homeWon?}
+// homeWon is set for penalty-shootout matches where goals alone don't determine the winner
 function teamOutcome(teamName, m, scores) {
   if (!scores || scores.home == null) return null;
+  // Penalty shootout: ESPN's explicit winner flag overrides the goals tally
+  if (scores.homeWon !== undefined) {
+    const isHome = m.home === teamName;
+    return (scores.homeWon === isHome) ? 'Win' : 'Lose';
+  }
   const h = Number(scores.home), a = Number(scores.away);
   if (m.home === teamName) return h > a ? 'Win' : h === a ? 'Draw' : 'Lose';
   if (m.away === teamName) return a > h ? 'Win' : a === h ? 'Draw' : 'Lose';
@@ -749,6 +755,11 @@ async function fetchMatchResults(silent=false) {
             const hs = parseInt(home.score);
             const as_ = parseInt(away.score);
             if (isNaN(hs)||isNaN(as_)) continue;
+            // ESPN marks the actual winner via competitor.winner (true/false).
+            // For penalty shootouts the goals score is level but one team has winner=true.
+            const espnHomeWon = home.winner === true;
+            const espnAwayWon = away.winner === true;
+            const hasExplicitWinner = espnHomeWon || espnAwayWon;
             // Match by team names only — no date constraint, since our schedule
             // dates can be several days off from ESPN's ET-based dates.
             // Safe because each pair plays at most once per stage.
@@ -794,10 +805,18 @@ async function fetchMatchResults(silent=false) {
               if (!sm) { console.log(`ESPN: could not match ${hn} vs ${an}`); continue; }
             }
             const id = mkId(sm);
-            const aligned = espnName(sm.home)===hn ? {home:hs, away:as_} : {home:as_, away:hs};
-            if (!S.matchResults[id] ||
-                S.matchResults[id].home!==aligned.home ||
-                S.matchResults[id].away!==aligned.away) {
+            const smHomeIsESPNHome = espnName(sm.home) === hn;
+            const aligned = smHomeIsESPNHome ? {home:hs, away:as_} : {home:as_, away:hs};
+            // Store homeWon for any match where ESPN explicitly marks a winner
+            // (penalty shootouts, and also regular matches — harmless if goals already differ)
+            if (hasExplicitWinner) {
+              aligned.homeWon = smHomeIsESPNHome ? espnHomeWon : espnAwayWon;
+            }
+            const existing = S.matchResults[id];
+            if (!existing ||
+                existing.home !== aligned.home ||
+                existing.away !== aligned.away ||
+                existing.homeWon !== aligned.homeWon) {
               S.matchResults[id] = aligned;
               anyNew = true;
             }
@@ -1412,7 +1431,9 @@ function renderMatches(){
           const outcome = teamOutcome(team.name, m, scores);
           const pts = RESULT_PTS[outcome] || 0;
           const outcomeColor = outcome==='Win'?'#27ae60':outcome==='Draw'?'#f39c12':'#e74c3c';
-          const scoreStr = isHome ? `${scores.home}–${scores.away}` : `${scores.away}–${scores.home}`;
+          const isPen = scores.homeWon !== undefined;
+          const rawScore = isHome ? `${scores.home}–${scores.away}` : `${scores.away}–${scores.home}`;
+          const scoreStr = isPen ? `${rawScore} <span style="font-size:9px;color:var(--muted)">(P)</span>` : rawScore;
           return `<div class="auto-match-row">
             <span class="auto-match-stage">${stageLabel}</span>
             <span class="auto-match-teams">${team.flag} ${team.name} <span style="color:var(--muted);font-size:10px">${isHome?'vs':'@'}</span> ${oppFlag} ${opponent}</span>
