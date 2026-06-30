@@ -493,6 +493,8 @@ const STAGE_BONUS = {
   'Quarterfinal':30,'Semifinal':40,'Final':50,'Champions':100
 };
 const STAGE_ORDER = ['Group','Round of 32','Round of 16','Quarterfinal','Semifinal','Final','Champions'];
+// Bump this whenever the hard-coded SCHEDULE is patched — forces ESPN cache rebuild
+const SCHEDULE_CACHE_VERSION = 3;
 
 // Safe Firebase key from match: no . # $ / [ ] or spaces
 const mkId = m => `${m.d}_${m.home.replace(/[.#$\/\[\]\s]/g,'_')}_${m.away.replace(/[.#$\/\[\]\s]/g,'_')}`;
@@ -513,22 +515,29 @@ function teamOutcome(teamName, m, scores) {
   if (m.away === teamName) return a > h ? 'Win' : a === h ? 'Draw' : 'Lose';
   return null;
 }
-// Highest stage a team has played at (using S.matchResults)
+// Highest stage a team has reached.
+// A team QUALIFIES for a stage as soon as they appear in a SCHEDULE fixture for it —
+// they don't need a result to earn the stage bonus (e.g. qualifying for R32 earns +10
+// even before their R32 match is played or fetched).
 function teamHighestStage(teamName) {
   let best = 'Group';
   SCHEDULE.forEach(m => {
     if (m.home !== teamName && m.away !== teamName) return;
-    const scores = S.matchResults && S.matchResults[mkId(m)];
-    if (!scores || scores.home == null) return;
     const stage = normStage(m.stage);
     const mapped = stage.startsWith('Group') ? 'Group' : stage;
-    const idx = STAGE_ORDER.indexOf(mapped);
-    if (idx < 0) return;
-    // Champions: won the final
-    if (mapped === 'Final' && teamOutcome(teamName, m, scores) === 'Win') {
-      best = 'Champions'; return;
+    const stageIdx = STAGE_ORDER.indexOf(mapped);
+    if (stageIdx < 0) return;
+    const scores = S.matchResults && S.matchResults[mkId(m)];
+    if (scores && scores.home != null) {
+      // Have a result — check for Champions
+      if (mapped === 'Final' && teamOutcome(teamName, m, scores) === 'Win') {
+        best = 'Champions'; return;
+      }
+      if (stageIdx > STAGE_ORDER.indexOf(best)) best = mapped;
+    } else if (mapped !== 'Group') {
+      // Team is in a knockout fixture even without a result — they've qualified
+      if (stageIdx > STAGE_ORDER.indexOf(best)) best = mapped;
     }
-    if (STAGE_ORDER.indexOf(mapped) > STAGE_ORDER.indexOf(best)) best = mapped;
   });
   return best;
 }
@@ -728,7 +737,9 @@ async function fetchMatchResults(silent=false) {
             const comp = (event.competitions || [])[0];
             const isFinished = comp?.status?.type?.completed === true
               || comp?.status?.type?.state === 'post'
-              || comp?.status?.type?.name === 'STATUS_FINAL';
+              || comp?.status?.type?.name === 'STATUS_FULL_TIME'
+              || comp?.status?.type?.name === 'STATUS_FINAL'
+              || comp?.status?.type?.name === 'STATUS_FINAL_PEN'; // penalty shootout
             if (!isFinished) continue;
             const home = comp.competitors?.find(c=>c.homeAway==='home');
             const away = comp.competitors?.find(c=>c.homeAway==='away');
@@ -747,7 +758,41 @@ async function fetchMatchResults(silent=false) {
                 (espnName(m.home)===an && espnName(m.away)===hn)
               )
             );
-            if (!sm) { console.log(`ESPN: no SCHEDULE match for ${hn} vs ${an} on ${date}`); continue; }
+            if (!sm) {
+              // No SCHEDULE entry yet — create a synthetic one so we can store the result.
+              // Typical case: knockout match (R32, QF…) not yet in our schedule cache.
+              const alreadyIn = SCHEDULE.find(m =>
+                (m.home===hn&&m.away===an)||(m.home===an&&m.away===hn)
+              );
+              if (!alreadyIn) {
+                const note0   = comp?.altGameNote || '';
+                const grpM0   = note0.match(/Group ([A-L])/i);
+                const sSlug0  = (event.season?.slug || '').toLowerCase();
+                const synStage = grpM0 ? ('Group '+grpM0[1].toUpperCase())
+                  : sSlug0.includes('round-of-16') ? 'Round of 16'
+                  : sSlug0.includes('quarter')     ? 'Quarterfinal'
+                  : sSlug0.includes('semi')        ? 'Semifinal'
+                  : (sSlug0==='final'||sSlug0.includes('final')) ? 'Final 🏆'
+                  : 'Round of 32';
+                const evUtcMs = new Date(event.date || `${date}T12:00Z`).getTime();
+                const evBst   = new Date(evUtcMs + 3600000);
+                const synEntry = {
+                  d: evBst.toISOString().slice(0,10),
+                  t: String(evBst.getUTCHours()).padStart(2,'0')+':'+String(evBst.getUTCMinutes()).padStart(2,'0'),
+                  home: hn, away: an, venue: '', stage: synStage
+                };
+                SCHEDULE.push(synEntry);
+                // Also kick off a proper schedule rebuild in the background
+                if (!_espnScheduleBuilding) buildScheduleFromESPN(true);
+              }
+              sm = SCHEDULE.find(m =>
+                (!S.matchResults[mkId(m)]) && (
+                  (espnName(m.home)===hn && espnName(m.away)===an) ||
+                  (espnName(m.home)===an && espnName(m.away)===hn)
+                )
+              );
+              if (!sm) { console.log(`ESPN: could not match ${hn} vs ${an}`); continue; }
+            }
             const id = mkId(sm);
             const aligned = espnName(sm.home)===hn ? {home:hs, away:as_} : {home:as_, away:hs};
             if (!S.matchResults[id] ||
@@ -873,11 +918,22 @@ function _parseESPNScheduleEvents(events, out) {
 }
 
 async function buildScheduleFromESPN(force=false) {
-  // Use cached copy from Firebase if available (and not forcing a refresh)
-  if (!force && S.espnSchedule && Array.isArray(S.espnSchedule) && S.espnSchedule.length > 60) {
-    SCHEDULE = S.espnSchedule;
-    console.log(`Schedule loaded from Firebase cache: ${SCHEDULE.length} matches`);
-    return;
+  // Decide whether the Firebase cache is usable:
+  //  1. Version must match (bumped when hard-coded SCHEDULE is patched)
+  //  2. If R32 has started, cache must contain at least one real knockout match
+  //     (otherwise the cache predates the R32 draw being published)
+  if (!force && S.espnSchedule && Array.isArray(S.espnSchedule) && S.espnSchedule.length > 60
+      && S.espnScheduleVersion === SCHEDULE_CACHE_VERSION) {
+    const r32Started    = Date.now() > new Date('2026-06-28T19:00:00Z').getTime();
+    const hasRealKnockout = S.espnSchedule.some(m =>
+      m.stage && !m.stage.startsWith('Group') && TEAMS.find(t => t.name === m.home)
+    );
+    if (!r32Started || hasRealKnockout) {
+      SCHEDULE = S.espnSchedule;
+      console.log(`Schedule loaded from Firebase cache: ${SCHEDULE.length} matches`);
+      return;
+    }
+    console.log('ESPN schedule cache stale (R32 started, no knockout entries) — rebuilding…');
   }
   if (_espnScheduleBuilding) return;
   _espnScheduleBuilding = true;
@@ -965,6 +1021,7 @@ async function buildScheduleFromESPN(force=false) {
 
   SCHEDULE = merged;
   S.espnSchedule = merged;
+  S.espnScheduleVersion = SCHEDULE_CACHE_VERSION;
   save();
 
   // Re-render open tab
@@ -1644,8 +1701,8 @@ let SCHEDULE = [
   {d:'2026-06-25',t:'20:00',home:'Czech Rep',  away:'Mexico',       venue:'Dallas',         stage:'Group A'},
   {d:'2026-06-26',t:'00:00',home:'Bosnia & Hz', away:'Qatar',        venue:'Houston',        stage:'Group B'},
   {d:'2026-06-26',t:'00:00',home:'Switzerland', away:'Canada',       venue:'Miami',          stage:'Group B'},
-  {d:'2026-06-26',t:'20:00',home:'Scotland',    away:'Haiti',        venue:'Seattle',        stage:'Group C'},
-  {d:'2026-06-26',t:'20:00',home:'Morocco',     away:'Brazil',       venue:'Kansas City',    stage:'Group C'},
+  {d:'2026-06-26',t:'20:00',home:'Brazil',      away:'Scotland',     venue:'Kansas City',    stage:'Group C'},
+  {d:'2026-06-26',t:'20:00',home:'Morocco',     away:'Haiti',        venue:'Seattle',        stage:'Group C'},
   {d:'2026-06-26',t:'23:00',home:'Paraguay',    away:'Turkey',       venue:'New York',       stage:'Group D'},
   {d:'2026-06-26',t:'23:00',home:'Australia',   away:'USA',          venue:'Philadelphia',   stage:'Group D'},
   {d:'2026-06-27',t:'00:00',home:'Curaçao',     away:'Ivory Coast',  venue:'Boston',         stage:'Group E'},
@@ -1654,10 +1711,10 @@ let SCHEDULE = [
   {d:'2026-06-27',t:'20:00',home:'Tunisia',     away:'Netherlands',  venue:'Dallas',         stage:'Group F'},
   {d:'2026-06-27',t:'20:00',home:'New Zealand', away:'Belgium',      venue:'Atlanta',        stage:'Group G'},
   {d:'2026-06-27',t:'20:00',home:'Iran',        away:'Egypt',        venue:'Miami',          stage:'Group G'},
-  {d:'2026-06-27',t:'23:00',home:'Saudi Arabia',away:'Spain',        venue:'Seattle',        stage:'Group H'},
-  {d:'2026-06-27',t:'23:00',home:'Uruguay',     away:'Cape Verde',   venue:'San Francisco',  stage:'Group H'},
-  {d:'2026-06-27',t:'23:00',home:'Norway',      away:'Iraq',         venue:'Kansas City',    stage:'Group I'},
-  {d:'2026-06-27',t:'23:00',home:'Senegal',     away:'France',       venue:'Houston',        stage:'Group I'},
+  {d:'2026-06-27',t:'23:00',home:'Spain',        away:'Uruguay',      venue:'Kansas City',    stage:'Group H'},
+  {d:'2026-06-27',t:'23:00',home:'Saudi Arabia',away:'Cape Verde',   venue:'Seattle',        stage:'Group H'},
+  {d:'2026-06-27',t:'23:00',home:'France',      away:'Norway',       venue:'Houston',        stage:'Group I'},
+  {d:'2026-06-27',t:'23:00',home:'Senegal',     away:'Iraq',         venue:'Kansas City',    stage:'Group I'},
   {d:'2026-06-28',t:'00:00',home:'Jordan',      away:'Argentina',    venue:'Miami',          stage:'Group J'},
   {d:'2026-06-28',t:'00:00',home:'Algeria',     away:'Austria',      venue:'Dallas',         stage:'Group J'},
   {d:'2026-06-28',t:'03:00',home:'Colombia',    away:'DR Congo',     venue:'Los Angeles',    stage:'Group K'},
