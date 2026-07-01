@@ -488,11 +488,33 @@ const P_COLORS = {Namimoto:'#e74c3c',Adbrahm:'#3498db',Abu:'#27ae60',Zdawg:'#f39
 const DRAFT_ORDER = [0,1,2,3, 3,2,1,0, 0,1,2,3, 3,2,1,0, 0,1,2,3];
 
 const RESULT_PTS = {Win:10,Draw:5,Lose:0,TBD:0};
-const STAGE_BONUS = {
+// Per-stage incremental bonus awarded for reaching each stage
+const STAGE_BONUS_INC = {
   'Group':0,'Round of 32':10,'Round of 16':20,
   'Quarterfinal':30,'Semifinal':40,'Final':50,'Champions':100
 };
+// Cumulative total: reaching Round of 16 earns R32 bonus (+10) AND R16 bonus (+20) = +30
+// Reaching Quarterfinal earns +10+20+30 = +60, and so on.
+const STAGE_BONUS = {
+  'Group':0,'Round of 32':10,'Round of 16':30,
+  'Quarterfinal':60,'Semifinal':100,'Final':150,'Champions':250
+};
 const STAGE_ORDER = ['Group','Round of 32','Round of 16','Quarterfinal','Semifinal','Final','Champions'];
+
+// Returns an array of {stage, inc} for every stage milestone a team has earned,
+// in ascending order — used to display the bonus breakdown line by line.
+function getStageBonusBreakdown(teamName) {
+  const highest = teamHighestStage(teamName);
+  const highestIdx = STAGE_ORDER.indexOf(highest);
+  if (highestIdx <= 0) return [];
+  const result = [];
+  for (let i = 1; i <= highestIdx; i++) {
+    const stage = STAGE_ORDER[i];
+    const inc = STAGE_BONUS_INC[stage] || 0;
+    if (inc > 0) result.push({ stage, inc });
+  }
+  return result;
+}
 // Bump this whenever the hard-coded SCHEDULE is patched — forces ESPN cache rebuild
 const SCHEDULE_CACHE_VERSION = 3;
 
@@ -523,6 +545,21 @@ function migrateResultKeys() {
 }
 // Normalise stage string (strip emoji etc) for STAGE_BONUS lookup
 const normStage = s => s.replace(/\s*🏆\s*/g,'').trim();
+
+// Return de-duplicated list of SCHEDULE entries for a given team.
+// Duplicates arise when both a TBD hard-coded placeholder AND a real ESPN
+// entry exist for the same matchup, or when synthetic + rebuilt entries coexist.
+// mkId is now date-free (Home_Away), so same-pairing entries collapse correctly.
+function getTeamMatches(teamName) {
+  const seen = new Set();
+  return SCHEDULE.filter(m => {
+    if (m.home !== teamName && m.away !== teamName) return false;
+    const key = mkId(m);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 // Is this match finished? (kickoff BST - 1h = UTC, + 105 min)
 function isMatchComplete(m) {
   const [yr,mo,dy] = m.d.split('-').map(Number);
@@ -550,8 +587,7 @@ function teamOutcome(teamName, m, scores) {
 // even before their R32 match is played or fetched).
 function teamHighestStage(teamName) {
   let best = 'Group';
-  SCHEDULE.forEach(m => {
-    if (m.home !== teamName && m.away !== teamName) return;
+  getTeamMatches(teamName).forEach(m => {
     const stage = normStage(m.stage);
     const mapped = stage.startsWith('Group') ? 'Group' : stage;
     const stageIdx = STAGE_ORDER.indexOf(mapped);
@@ -665,8 +701,7 @@ function playerScore(p) {
   let matchPts=0, stageBonus=0, cost=0;
   for(const t of getPicks(p)) {
     // Match points: from S.matchResults (auto-detected past matches)
-    SCHEDULE.forEach(m => {
-      if (m.home !== t.name && m.away !== t.name) return;
+    getTeamMatches(t.name).forEach(m => {
       const scores = S.matchResults && S.matchResults[mkId(m)];
       const outcome = teamOutcome(t.name, m, scores);
       if (outcome) matchPts += RESULT_PTS[outcome] || 0;
@@ -727,10 +762,26 @@ async function fetchMatchResults(silent=false) {
   try {
     if (!S.matchResults) S.matchResults = {};
 
-    // Our schedule dates are unreliable (hard-coded, since shifted by FIFA).
-    // Instead of guessing offsets, scan every day from tournament start to today.
+    // Matches with no result yet
     const unresolvedMatches = SCHEDULE.filter(m => isMatchComplete(m) && !S.matchResults[mkId(m)]);
-    if (!unresolvedMatches.length) {
+
+    // Knockout draws stored WITHOUT homeWon — these were saved before the penalty fix
+    // and may actually be penalty-shootout wins. Delete them so they get re-fetched.
+    const knockoutDrawsMissingWinner = SCHEDULE.filter(m => {
+      if (!isMatchComplete(m)) return false;
+      const r = S.matchResults && S.matchResults[mkId(m)];
+      if (!r || r.homeWon !== undefined) return false; // fine: either no result or already has winner
+      const stage = normStage(m.stage || '');
+      const isKnockout = !stage.startsWith('Group');
+      return isKnockout && Number(r.home) === Number(r.away); // equal-score knockout = suspect draw
+    });
+    knockoutDrawsMissingWinner.forEach(m => {
+      console.log(`Re-fetching suspect knockout draw: ${m.home} vs ${m.away}`);
+      delete S.matchResults[mkId(m)];
+    });
+
+    const needsFetch = unresolvedMatches.length + knockoutDrawsMissingWinner.length;
+    if (!needsFetch) {
       if (!silent) toast('Results up to date ✓', 'ok');
       return;
     }
@@ -1463,7 +1514,7 @@ function renderScoreboard(){
     }
     picks.forEach((team,i)=>{
       // Compute W/D/L from ESPN results in S.matchResults
-      const teamSchedule = SCHEDULE.filter(m => m.home===team.name||m.away===team.name);
+      const teamSchedule = getTeamMatches(team.name);
       let W=0,D=0,L=0,mp=0;
       teamSchedule.forEach(m=>{
         const scores = S.matchResults && S.matchResults[mkId(m)];
@@ -1531,8 +1582,8 @@ function renderMatches(){
       </div>` : '';
 
     const teamsHtml = picks.map(team => {
-      // All scheduled matches for this team, sorted by date+time
-      const teamMatches = SCHEDULE.filter(m => m.home === team.name || m.away === team.name);
+      // All scheduled matches for this team (de-duplicated by mkId)
+      const teamMatches = getTeamMatches(team.name);
       const completedMatches = teamMatches.filter(m => isMatchComplete(m));
       const highestStage = teamHighestStage(team.name);
       const stageBonusVal = STAGE_BONUS[highestStage] || 0;
@@ -1584,9 +1635,15 @@ function renderMatches(){
         }
       }).join('');
 
-      const stageBonusHtml = stageBonusVal > 0 ? `
+      const stageBonusBreakdown = getStageBonusBreakdown(team.name);
+      const stageBonusHtml = stageBonusBreakdown.length > 0 ? `
         <div class="stage-bonus-row">
-          🏅 Stage bonus — reached <strong>${highestStage}</strong>: <span style="color:#27ae60;font-weight:700">+${stageBonusVal} pts</span>
+          ${stageBonusBreakdown.map(b =>
+            `🏅 Qualified for <strong>${b.stage}</strong>: <span style="color:#27ae60;font-weight:700">+${b.inc} pts</span>`
+          ).join('<br>')}
+          ${stageBonusBreakdown.length > 1
+            ? `<br><span style="font-size:11px;color:#27ae60;font-weight:600">Stage total: +${stageBonusVal} pts</span>`
+            : ''}
         </div>` : '';
 
       return `<div class="team-match-block">
