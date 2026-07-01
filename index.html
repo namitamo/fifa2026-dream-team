@@ -547,18 +547,36 @@ function migrateResultKeys() {
 const normStage = s => s.replace(/\s*🏆\s*/g,'').trim();
 
 // Return de-duplicated list of SCHEDULE entries for a given team.
-// Duplicates arise when both a TBD hard-coded placeholder AND a real ESPN
-// entry exist for the same matchup, or when synthetic + rebuilt entries coexist.
-// mkId is now date-free (Home_Away), so same-pairing entries collapse correctly.
+// Uses a SYMMETRIC pair key (sorted team names) so "Spain vs Saudi Arabia" and
+// "Saudi Arabia vs Spain" are treated as the same match regardless of which is home/away.
+// This collapses the duplicate entries that arise when the ESPN cache and the
+// hard-coded schedule have the same fixture with home/away reversed.
 function getTeamMatches(teamName) {
   const seen = new Set();
   return SCHEDULE.filter(m => {
     if (m.home !== teamName && m.away !== teamName) return false;
-    const key = mkId(m);
+    const key = [m.home, m.away].sort().join('|');
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
+}
+
+// Look up a stored result for match m, normalised to m's home/away perspective.
+// Results may have been stored under either (home_away) or (away_home) orientation
+// depending on which SCHEDULE entry was used when the result was fetched.
+// Returns the stored scores object {home, away, homeWon?} oriented to m, or null.
+function lookupResult(m) {
+  if (!S.matchResults) return null;
+  const safe = n => n.replace(/[.#$\/\[\]\s]/g, '_');
+  const direct = S.matchResults[`${safe(m.home)}_${safe(m.away)}`];
+  if (direct !== undefined) return direct;
+  // Try reversed orientation — flip scores back to match m's perspective
+  const rev = S.matchResults[`${safe(m.away)}_${safe(m.home)}`];
+  if (!rev || rev.home == null) return null;
+  const flipped = { home: rev.away, away: rev.home };
+  if (rev.homeWon !== undefined) flipped.homeWon = !rev.homeWon;
+  return flipped;
 }
 // Is this match finished? (kickoff BST - 1h = UTC, + 105 min)
 function isMatchComplete(m) {
@@ -592,7 +610,7 @@ function teamHighestStage(teamName) {
     const mapped = stage.startsWith('Group') ? 'Group' : stage;
     const stageIdx = STAGE_ORDER.indexOf(mapped);
     if (stageIdx < 0) return;
-    const scores = S.matchResults && S.matchResults[mkId(m)];
+    const scores = lookupResult(m);
     if (scores && scores.home != null) {
       // Have a result — check for Champions
       if (mapped === 'Final' && teamOutcome(teamName, m, scores) === 'Win') {
@@ -702,7 +720,7 @@ function playerScore(p) {
   for(const t of getPicks(p)) {
     // Match points: from S.matchResults (auto-detected past matches)
     getTeamMatches(t.name).forEach(m => {
-      const scores = S.matchResults && S.matchResults[mkId(m)];
+      const scores = lookupResult(m);
       const outcome = teamOutcome(t.name, m, scores);
       if (outcome) matchPts += RESULT_PTS[outcome] || 0;
     });
@@ -762,22 +780,25 @@ async function fetchMatchResults(silent=false) {
   try {
     if (!S.matchResults) S.matchResults = {};
 
-    // Matches with no result yet
-    const unresolvedMatches = SCHEDULE.filter(m => isMatchComplete(m) && !S.matchResults[mkId(m)]);
+    // Matches with no result yet (check both key orientations via lookupResult)
+    const unresolvedMatches = SCHEDULE.filter(m => isMatchComplete(m) && !lookupResult(m));
 
     // Knockout draws stored WITHOUT homeWon — these were saved before the penalty fix
     // and may actually be penalty-shootout wins. Delete them so they get re-fetched.
     const knockoutDrawsMissingWinner = SCHEDULE.filter(m => {
       if (!isMatchComplete(m)) return false;
-      const r = S.matchResults && S.matchResults[mkId(m)];
-      if (!r || r.homeWon !== undefined) return false; // fine: either no result or already has winner
+      const r = lookupResult(m);
+      if (!r || r.homeWon !== undefined) return false;
       const stage = normStage(m.stage || '');
       const isKnockout = !stage.startsWith('Group');
-      return isKnockout && Number(r.home) === Number(r.away); // equal-score knockout = suspect draw
+      return isKnockout && Number(r.home) === Number(r.away);
     });
     knockoutDrawsMissingWinner.forEach(m => {
       console.log(`Re-fetching suspect knockout draw: ${m.home} vs ${m.away}`);
-      delete S.matchResults[mkId(m)];
+      // Delete both possible key orientations
+      const safe = n => n.replace(/[.#$\/\[\]\s]/g, '_');
+      delete S.matchResults[`${safe(m.home)}_${safe(m.away)}`];
+      delete S.matchResults[`${safe(m.away)}_${safe(m.home)}`];
     });
 
     const needsFetch = unresolvedMatches.length + knockoutDrawsMissingWinner.length;
@@ -1517,7 +1538,7 @@ function renderScoreboard(){
       const teamSchedule = getTeamMatches(team.name);
       let W=0,D=0,L=0,mp=0;
       teamSchedule.forEach(m=>{
-        const scores = S.matchResults && S.matchResults[mkId(m)];
+        const scores = lookupResult(m);
         const outcome = teamOutcome(team.name, m, scores);
         if(outcome==='Win'){W++;mp+=RESULT_PTS.Win||0;}
         else if(outcome==='Draw'){D++;mp+=RESULT_PTS.Draw||0;}
@@ -1589,8 +1610,7 @@ function renderMatches(){
       const stageBonusVal = STAGE_BONUS[highestStage] || 0;
 
       const matchRowsHtml = completedMatches.map(m => {
-        const id = mkId(m);
-        const scores = S.matchResults[id];
+        const scores = lookupResult(m);
         const opponent = m.home === team.name ? m.away : m.home;
         const oppTeam = TEAMS.find(t => t.name === opponent);
         const oppFlag = oppTeam ? oppTeam.flag : '';
