@@ -945,7 +945,7 @@ async function fetchMatchResults(silent=false) {
             // Match by team names only — no date constraint, since our schedule
             // dates can be several days off from ESPN's ET-based dates.
             // Safe because each pair plays at most once per stage.
-            const sm = SCHEDULE.find(m =>
+            let sm = SCHEDULE.find(m =>
               (!S.matchResults[mkId(m)]) && (
                 (espnName(m.home)===hn && espnName(m.away)===an) ||
                 (espnName(m.home)===an && espnName(m.away)===hn)
