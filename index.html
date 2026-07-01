@@ -497,7 +497,30 @@ const STAGE_ORDER = ['Group','Round of 32','Round of 16','Quarterfinal','Semifin
 const SCHEDULE_CACHE_VERSION = 3;
 
 // Safe Firebase key from match: no . # $ / [ ] or spaces
-const mkId = m => `${m.d}_${m.home.replace(/[.#$\/\[\]\s]/g,'_')}_${m.away.replace(/[.#$\/\[\]\s]/g,'_')}`;
+// Date intentionally excluded — two teams meet at most once per tournament,
+// so (home, away) is a unique key. Excluding the date avoids stale-key bugs
+// when buildScheduleFromESPN assigns a different BST date than the single-day scan.
+const mkId = m => `${m.home.replace(/[.#$\/\[\]\s]/g,'_')}_${m.away.replace(/[.#$\/\[\]\s]/g,'_')}`;
+
+// One-time migration: old keys were prefixed with "YYYY-MM-DD_". Strip that prefix.
+function migrateResultKeys() {
+  if (!S.matchResults) return;
+  const fresh = {};
+  let changed = false;
+  for (const [k, v] of Object.entries(S.matchResults)) {
+    if (/^\d{4}-\d{2}-\d{2}_/.test(k)) {
+      const newKey = k.replace(/^\d{4}-\d{2}-\d{2}_/, '');
+      if (!fresh[newKey]) { fresh[newKey] = v; changed = true; }
+    } else {
+      fresh[k] = v;
+    }
+  }
+  if (changed) {
+    S.matchResults = fresh;
+    console.log(`Migrated ${Object.keys(fresh).length} matchResult keys to date-free format`);
+    save();
+  }
+}
 // Normalise stage string (strip emoji etc) for STAGE_BONUS lookup
 const normStage = s => s.replace(/\s*🏆\s*/g,'').trim();
 // Is this match finished? (kickoff BST - 1h = UTC, + 105 min)
@@ -722,6 +745,114 @@ async function fetchMatchResults(silent=false) {
     let anyNew = false;
     let totalFetchErrors = 0;
 
+    // ── Phase 1: range fetch for knockout stage (faster, catches all R32+ in one call) ──
+    const knockoutStart = '20260628';
+    const todayStr = scanEnd.toISOString().slice(0,10).replace(/-/g,'');
+    for (const slug of ESPN_SLUGS) {
+      try {
+        const resp = await fetch(
+          `https://site.api.espn.com/apis/site/v2/sports/soccer/${slug}/scoreboard?dates=${knockoutStart}-${todayStr}&limit=200`,
+          {signal: AbortSignal.timeout(15000)}
+        );
+        if (!resp.ok) continue;
+        const data = await resp.json();
+        const events = data.events || [];
+        if (!events.length) continue;
+        console.log(`ESPN range ${knockoutStart}-${todayStr} (${slug}): ${events.length} events`);
+        for (const event of events) {
+          const comp = (event.competitions || [])[0];
+          const isFinished = comp?.status?.type?.completed === true
+            || comp?.status?.type?.state === 'post'
+            || comp?.status?.type?.name === 'STATUS_FULL_TIME'
+            || comp?.status?.type?.name === 'STATUS_FINAL'
+            || comp?.status?.type?.name === 'STATUS_FINAL_PEN';
+          if (!isFinished) continue;
+          const home = comp.competitors?.find(c=>c.homeAway==='home');
+          const away = comp.competitors?.find(c=>c.homeAway==='away');
+          if (!home || !away) continue;
+          const hn = espnName(home.team?.displayName||'');
+          const an = espnName(away.team?.displayName||'');
+          const hs = parseInt(home.score);
+          const as_ = parseInt(away.score);
+          if (isNaN(hs)||isNaN(as_)) continue;
+          const espnHomeWon = home.winner === true;
+          const espnAwayWon = away.winner === true;
+          const hasExplicitWinner = espnHomeWon || espnAwayWon;
+          let sm = SCHEDULE.find(m =>
+            (!S.matchResults[mkId(m)]) && (
+              (espnName(m.home)===hn && espnName(m.away)===an) ||
+              (espnName(m.home)===an && espnName(m.away)===hn)
+            )
+          );
+          if (!sm) {
+            const alreadyIn = SCHEDULE.find(m =>
+              (m.home===hn&&m.away===an)||(m.home===an&&m.away===hn)
+            );
+            if (!alreadyIn) {
+              const note0   = comp?.altGameNote || '';
+              const grpM0   = note0.match(/Group ([A-L])/i);
+              const sSlug0  = (event.season?.slug || '').toLowerCase();
+              const synStage = grpM0 ? ('Group '+grpM0[1].toUpperCase())
+                : sSlug0.includes('round-of-16') ? 'Round of 16'
+                : sSlug0.includes('quarter')     ? 'Quarterfinal'
+                : sSlug0.includes('semi')        ? 'Semifinal'
+                : (sSlug0==='final'||sSlug0.includes('final')) ? 'Final 🏆'
+                : 'Round of 32';
+              const evUtcMs = new Date(event.date || `${todayStr}T12:00Z`).getTime();
+              const evBst   = new Date(evUtcMs + 3600000);
+              const synEntry = {
+                d: evBst.toISOString().slice(0,10),
+                t: String(evBst.getUTCHours()).padStart(2,'0')+':'+String(evBst.getUTCMinutes()).padStart(2,'0'),
+                home: hn, away: an, venue: '', stage: synStage
+              };
+              SCHEDULE.push(synEntry);
+              if (!_espnScheduleBuilding) buildScheduleFromESPN(true);
+            }
+            sm = SCHEDULE.find(m =>
+              (!S.matchResults[mkId(m)]) && (
+                (espnName(m.home)===hn && espnName(m.away)===an) ||
+                (espnName(m.home)===an && espnName(m.away)===hn)
+              )
+            );
+            if (!sm) { console.log(`ESPN range: could not match ${hn} vs ${an}`); continue; }
+          }
+          const id = mkId(sm);
+          const smHomeIsESPNHome = espnName(sm.home) === hn;
+          const aligned = smHomeIsESPNHome ? {home:hs, away:as_} : {home:as_, away:hs};
+          if (hasExplicitWinner) {
+            aligned.homeWon = smHomeIsESPNHome ? espnHomeWon : espnAwayWon;
+          }
+          const existing = S.matchResults[id];
+          if (!existing ||
+              existing.home !== aligned.home ||
+              existing.away !== aligned.away ||
+              existing.homeWon !== aligned.homeWon) {
+            S.matchResults[id] = aligned;
+            anyNew = true;
+          }
+        }
+        break; // slug worked for range fetch
+      } catch(e) {
+        console.warn(`ESPN range fetch (${slug}):`, e.message);
+      }
+    }
+
+    // Re-check after range fetch — may have resolved all unresolved matches
+    const stillUnresolved = SCHEDULE.filter(m => isMatchComplete(m) && !S.matchResults[mkId(m)]);
+    if (!stillUnresolved.length) {
+      if (anyNew) {
+        save();
+        if (document.getElementById('tab-matches').classList.contains('active')) renderMatches();
+        if (document.getElementById('tab-scoreboard').classList.contains('active')) renderScoreboard();
+        if (document.getElementById('tab-schedule').classList.contains('active')) renderSchedule();
+        if (!silent) toast('⚽ Match results updated','ok');
+      } else if (!silent) {
+        toast('Results up to date ✓', 'ok');
+      }
+      return;
+    }
+
+    // ── Phase 2: day-by-day scan for any remaining unresolved matches ──
     for (const date of missingDates) {
       const dateStr = date.replace(/-/g,'');
       let gotEvents = false;
@@ -2105,6 +2236,9 @@ function updateCountdown(){
       if (!S.matchResults) S.matchResults = {};
       if (!S.changes)      S.changes      = {};
       if (!S.changeLog) S.changeLog = {};
+      // One-time migration from date-prefixed keys ("2026-06-29_Germany_Paraguay")
+      // to date-free keys ("Germany_Paraguay") — fixes stale-key bug for penalty matches.
+      migrateResultKeys();
       // Normalise playerOrder — Firebase can return arrays as {0:'x',1:'y'...} objects
       S.playerOrder = toArray(S.playerOrder) || ['Namimoto','Adbrahm','Abu','Zdawg'];
       // Normalise ESPN schedule cache — Firebase stores arrays as {0:{…},1:{…}…} objects
